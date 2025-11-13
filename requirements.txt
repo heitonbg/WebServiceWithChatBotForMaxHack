@@ -1,0 +1,10 @@
+aiomax==2.12.2
+fastapi==0.121.0
+uvicorn[standard]==0.22.0
+SQLAlchemy==2.0.44
+pydantic==2.12.4
+aiohttp==3.13.2
+python-dotenv==1.2.1
+certifi==2023.11.17
+requests==2.31.0
+urllib3==1.26.18

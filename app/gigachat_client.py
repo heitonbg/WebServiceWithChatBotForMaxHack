@@ -1,3 +1,4 @@
+import json
 import sys
 
 import requests
@@ -159,5 +160,80 @@ class GigaChatClient:
                 steps.append(cleaned_line)
 
         return steps if len(steps) >= 2 else None
+
+    def get_daily_insights(self, daily_data):
+        """Получить умные инсайты от GigaChat"""
+
+        prompt = f"""
+        Проанализируй продуктивность пользователя за сегодня и дай умные инсайты.
+
+        ДАННЫЕ:
+        - Выполнено задач: {len(daily_data['completed_tasks'])}
+        - Невыполнено задач: {len(daily_data['pending_tasks'])}  
+        - Процент выполнения: {daily_data['completion_rate']:.0%}
+        - Эффективность по сложности: {daily_data['energy_efficiency']:.0%}
+        - Уровень пользователя: {daily_data['user_level']}
+
+        ВЫПОЛНЕННЫЕ ЗАДАЧИ: {', '.join(daily_data['completed_tasks'])}
+        НЕВЫПОЛНЕННЫЕ ЗАДАЧИ: {', '.join(daily_data['pending_tasks'])}
+        
+        Говори в настоящем времени.
+
+        ПРОАНИЛИЗИРУЙ:
+        1. Общее настроение продуктивности (excellent/good/moderate/needs_improvement)
+        2. 2-3 ключевых инсайта о паттернах работы
+        3. 2-3 практических рекомендации
+        4. Области для улучшения
+
+        ФОРМАТ JSON:
+        {{
+            "mood": "excellent",
+            "productivity_score": 85,
+            "energy_efficiency": 75,
+            "insights": ["инсайт 1", "инсайт 2"],
+            "recommendations": ["рекомендация 1", "рекомендация 2"],
+            "focus_areas": ["область 1", "область 2"]
+        }}
+        """
+
+        try:
+            response = self._make_gigachat_request(prompt)
+            return json.loads(response)
+        except:
+            return None
+
+    def _make_gigachat_request(self, prompt):
+        """Универсальный метод для запросов к GigaChat"""
+        try:
+            if not self.access_token:
+                token = self.get_access_token()
+                if not token:
+                    return None
+
+            payload = {
+                "model": "GigaChat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": 300
+            }
+
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': f'Bearer {self.access_token}'
+            }
+
+            response = requests.post(self.api_url, headers=headers, json=payload, verify=False, timeout=30)
+
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
+            else:
+                logging.error(f"GigaChat API error: {response.status_code}")
+                return None
+
+        except Exception as e:
+            logging.error(f"GigaChat request failed: {e}")
+            return None
 
 gigachat_client = GigaChatClient()

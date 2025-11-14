@@ -8,10 +8,10 @@ import asyncio
 from datetime import datetime, timedelta
 
 from services import (
-    random_motivation, decompose_task, analyze_day, get_or_create_user, 
+    random_motivation, decompose_task, get_or_create_user,
     add_task_for_user, list_tasks, complete_task, parse_date, validate_date,
     add_subtask, complete_subtask, list_subtasks, update_task, delete_task,
-    get_task_by_id, get_task_progress, complete_parent_task
+    get_task_by_id, get_task_progress, complete_parent_task, ai_enhanced_daily_analysis, analyze_day
 )
 from models import init_db
 from config import MAX_BOT_TOKEN
@@ -29,65 +29,81 @@ class TaskBot:
         self.setup_inactivity_checker_sync()
 
     def setup_inactivity_checker_sync(self):
-        """Синхронная проверка неактивности в отдельном потоке"""
         def checker():
-            while True:
-                try:
-                    time.sleep(300)  # 5 минут
-                    asyncio.create_task(self._check_inactive_users())
-                except Exception as e:
-                    logging.error(f"Inactivity checker error: {e}")
-                    time.sleep(300)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            async def async_checker():
+                while True:
+                    try:
+                        await asyncio.sleep(300)  # 5 минут
+                        await self._check_inactive_users()
+                    except Exception as e:
+                        logging.error(f"Inactivity checker error: {e}")
+                        await asyncio.sleep(300)
+
+            try:
+                loop.run_until_complete(async_checker())
+            finally:
+                loop.close()
 
         thread = threading.Thread(target=checker, daemon=True)
         thread.start()
 
     async def _check_inactive_users(self, test_mode=False):
-        """Проверка пользователей, которые не активны 4+ часа (или 1 минуту в тестовом режиме)"""
-        now = datetime.now()
-    
-        if test_mode:
-            # ТЕСТОВЫЙ РЕЖИМ: 1 минута неактивности
-            time_threshold = now - timedelta(minutes=1)
-            logging.info("🔍 [TEST] Checking for 1-minute inactivity...")
-        else:
-            # РЕАЛЬНЫЙ РЕЖИМ: 4 часа неактивности
-            time_threshold = now - timedelta(hours=4)
-            logging.info("🔍 Checking for 4-hour inactivity...")
+        try:
+            now = datetime.now()
 
-        notified_count = 0
+            if test_mode:
 
-        for user_id, last_time in self.last_activity.items():
-            if last_time < time_threshold:
+                time_threshold = now - timedelta(minutes=1)
+                logging.info("🔍 [TEST] Checking for 1-minute inactivity...")
+            else:
+                time_threshold = now - timedelta(hours=4)
+                logging.info("🔍 Checking for 4-hour inactivity...")
+
+            notified_count = 0
+            users_to_notify = []
+
+            # Собираем пользователей для уведомления
+            for user_id, last_time in self.last_activity.items():
+                if last_time < time_threshold:
+                    users_to_notify.append(user_id)
+
+            # Отправляем уведомления
+            for user_id in users_to_notify:
                 await self._send_inactivity_notification(user_id, test_mode)
                 # Обновляем время, чтобы не спамить
                 self.last_activity[user_id] = now
                 notified_count += 1
 
-        if test_mode:
-            logging.info(f"🔍 [TEST] Notified {notified_count} users")
-        elif notified_count > 0:
-            logging.info(f"📨 Sent inactivity notifications to {notified_count} users")
-        async def _send_inactivity_notification(self, user_id, test_mode=False):
-            """Отправка уведомления о неактивности"""
-            try:
-                chat_id = self.active_chats.get(user_id)
-                if not chat_id:
-                    return
+            if test_mode:
+                logging.info(f"🔍 [TEST] Notified {notified_count} users")
+            elif notified_count > 0:
+                logging.info(f"📨 Sent inactivity notifications to {notified_count} users")
 
-                if test_mode:
-                    text = "🧪 Тестовое уведомление: система работает!"
-                else:
-                    text = "⏰ Напоминание: ты неактивен уже 4 часа! Вернись к своим задачам! 📝"
+        except Exception as e:
+            logging.error(f"Error in _check_inactive_users: {e}")
 
-                await self.bot.send_message(text, chat_id)
-                logging.info(f"📨 Sent inactivity notification to user {user_id}")
+    async def _send_inactivity_notification(self, user_id, test_mode=False):
+        try:
+            chat_id = self.active_chats.get(user_id)
+            if not chat_id:
+                logging.warning(f"Chat ID not found for user {user_id}")
+                return
 
-            except Exception as e:
-                logging.error(f"Error in _send_inactivity_notification: {e}")
+            if test_mode:
+                text = "🧪 Тестовое уведомление: система работает!"
+            else:
+                text = "⏰ Напоминание: ты неактивен уже 4 часа! Увлёкся задачами и забыл отметить прогресс? Вместе мы сильнее! =)"
+
+            await self.bot.send_message(text, chat_id)
+            logging.info(f"📨 Sent inactivity notification to user {user_id}")
+
+        except Exception as e:
+            logging.error(f"Error sending inactivity notification to {user_id}: {e}")
 
     def update_user_activity(self, user_id):
-        """Обновляем время последней активности пользователя"""
         self.last_activity[user_id] = datetime.now()
 
     def normalize_user_id(self, user_data):
@@ -123,14 +139,12 @@ class TaskBot:
         return kb
 
     def get_paginated_task_selector(self, user_id, tasks, action_type='complete'):
-        """Клавиатура с пагинацией - 3 задачи на страницу ТОЛЬКО АКТИВНЫЕ"""
         if user_id not in self.pagination_state:
             self.pagination_state[user_id] = {'page': 0, 'action': action_type}
 
         state = self.pagination_state[user_id]
         page = state['page']
 
-        # ФИЛЬТРУЕМ ТОЛЬКО АКТИВНЫЕ ЗАДАЧИ (не выполненные)
         active_tasks = [t for t in tasks if t.status != 'done']
 
         if not active_tasks:
@@ -139,11 +153,9 @@ class TaskBot:
             kb.row(buttons.CallbackButton('⬅️ Главное меню', 'back_main'))
             return kb, "🎉 **Все задачи выполнены!** Нет активных задач для завершения."
 
-        # Разбиваем на страницы по 3 задачи
         tasks_per_page = 3
         total_pages = (len(active_tasks) + tasks_per_page - 1) // tasks_per_page
 
-        # Корректируем номер страницы если он превышает доступные
         if page >= total_pages:
             page = total_pages - 1
             self.pagination_state[user_id]['page'] = page
@@ -152,26 +164,22 @@ class TaskBot:
         end_idx = start_idx + tasks_per_page
         page_tasks = active_tasks[start_idx:end_idx]
 
-        # Формируем сообщение с информацией о странице
         message = f"📄 **Страница {page + 1}/{total_pages}**\n\n"
 
         kb = buttons.KeyboardBuilder()
 
-        # Добавляем задачи текущей страницы
         for task in page_tasks:
             if task.is_parent:
                 completed, total, _ = get_task_progress(task.id)
                 label = f"🎯 {task.title[:15]}... ({completed}/{total})"
                 callback_data = f'view_parent_{task.id}'
             else:
-                # Обрезаем длинные названия
                 short_title = task.title[:18] + "..." if len(task.title) > 18 else task.title
                 label = f"✅ {short_title}"
                 callback_data = f'{action_type}_{task.id}'
 
             kb.add(buttons.CallbackButton(label, callback_data))
 
-        # Добавляем кнопки пагинации
         if total_pages > 1:
             pagination_row = []
 
@@ -185,10 +193,8 @@ class TaskBot:
 
             kb.row(*pagination_row)
 
-        # Кнопка возврата
         kb.row(buttons.CallbackButton('⬅️ Главное меню', 'back_main'))
 
-        # Формируем текст с задачами текущей страницы
         for i, task in enumerate(page_tasks, start_idx + 1):
             if task.is_parent:
                 completed, total, progress = get_task_progress(task.id)
@@ -201,56 +207,44 @@ class TaskBot:
         return kb, message
 
     def get_parent_task_keyboard(self, task_id):
-        """Клавиатура для родительской задачи с подзадачами"""
         kb = buttons.KeyboardBuilder()
-        
-        # Получаем подзадачи
+
         subtasks = list_subtasks(task_id)
         
-        # Добавляем кнопки для подзадач
-        for subtask in subtasks[:6]:  # Ограничиваем 6 подзадачами
+        for subtask in subtasks[:6]:  
             status_icon = "✅" if subtask.status == "done" else "🔲"
             short_title = subtask.title[:20] + "..." if len(subtask.title) > 20 else subtask.title
             label = f"{status_icon} {short_title}"
             kb.add(buttons.CallbackButton(label, f'complete_{subtask.id}'))
         
-        # Кнопка завершения всей родительской задачи
         kb.row(buttons.CallbackButton('🎯 Завершить всю задачу', f'complete_parent_{task_id}'))
         
-        # Кнопка обновления
         kb.add(buttons.CallbackButton('🔄 Обновить', f'refresh_parent_{task_id}'))
         
-        # Кнопка возврата
         kb.row(buttons.CallbackButton('⬅️ Назад к списку', 'complete_task'))
         
         return kb
 
     def get_complete_keyboard(self, tasks):
-        """Клавиатура для завершения задач - только обычные и родительские"""
         kb = buttons.KeyboardBuilder()
 
-        # ✅ ОБЫЧНЫЕ ЗАДАЧИ (без подзадач)
         regular_tasks = [t for t in tasks if not t.parent_id and not t.is_parent and t.status != 'done']
 
-        # ✅ РОДИТЕЛЬСКИЕ ЗАДАЧИ (только те, у которых есть незавершённые подзадачи)
         parent_tasks = []
         for task in tasks:
             if task.is_parent and task.status != 'done':
                 completed, total, progress = get_task_progress(task.id)
-                if progress < 100:  # Есть незавершённые подзадачи
+                if progress < 100:  
                     parent_tasks.append(task)
 
-        # 🔄 ОБЪЕДИНЯЕМ И ОГРАНИЧИВАЕМ
-        available_tasks = (regular_tasks + parent_tasks)[:8]  # Максимум 8 кнопок
+        available_tasks = (regular_tasks + parent_tasks)[:8]  
 
         if not available_tasks:
             kb.add(buttons.CallbackButton('📝 Нет задач для завершения', 'no_tasks'))
         else:
             for task in available_tasks:
-                # 📝 ОБЫЧНЫЕ ЗАДАЧИ
                 if not task.is_parent:
                     kb.add(buttons.CallbackButton(f'✅ {task.title[:15]}...', f'complete_{task.id}'))
-                # 🎯 РОДИТЕЛЬСКИЕ ЗАДАЧИ (показываем прогресс)
                 else:
                     completed, total, progress = get_task_progress(task.id)
                     kb.add(buttons.CallbackButton(f'🎯 {task.title[:12]}... ({completed}/{total})', f'view_parent_{task.id}'))
@@ -266,24 +260,20 @@ class TaskBot:
         return kb
 
     def format_task_list(self, tasks):
-        """Показываем ТОЛЬКО главные задачи с прогрессом подзадач"""
         if not tasks:
             return "📝 **Список задач пуст.**"
 
-        # Берем ТОЛЬКО родительские задачи и обычные задачи (без подзадач)
         parent_tasks = [t for t in tasks if t.is_parent]
         regular_tasks = [t for t in tasks if not t.parent_id and not t.is_parent]
 
         lines = []
 
-        # 📝 ОБЫЧНЫЕ ЗАДАЧИ
         for task in regular_tasks:
             status_icon = "✅" if task.status == "done" else "⏳"
             time_info = f" ⏱{task.estimated_minutes}m" if task.estimated_minutes else ""
             diff_info = f" ⚡{task.difficulty}" if task.difficulty > 1 else ""
             lines.append(f"{status_icon} `{task.id:02d}` {task.title}{time_info}{diff_info}")
 
-        # 🎯 РОДИТЕЛЬСКИЕ ЗАДАЧИ (с прогрессом)
         for parent in parent_tasks:
             completed, total, progress = get_task_progress(parent.id)
 
@@ -334,8 +324,6 @@ class TaskBot:
                 f"🧠 **Привет, {name}!**\n\n"
                 "Я бот для управления задачами с интеграцией веб-приложения.\n\n"
                 "💡 *Задачи, созданные в веб-приложении, будут видны здесь и наоборот!*\n\n"
-                f"🌐 Для доступа к веб-приложению используй твой ID:\n`{user_id}`\n\n"
-                "💡 Сохрани этот ID - он нужен для входа в мини-приложение!\n\n"
                 "Выбери действие:",
                 keyboard=self.get_main_keyboard()
             )
@@ -354,7 +342,6 @@ class TaskBot:
 
             await ctx.reply(
                 f"✅ **С возвращением, {name}!** 🚀\n\n"
-                f"🌐 Твой ID для веб-приложения: `{user_id}`\n\n"
                 "Выбери действие:",
                 keyboard=self.get_main_keyboard()
             )
@@ -393,19 +380,15 @@ class TaskBot:
                     
                 task_text = self.format_task_list(tasks)
                 
-                # Проверяем есть ли родительские задачи для детального просмотра
                 parent_tasks = [t for t in tasks if t.is_parent and t.status != 'done']
                 if parent_tasks:
-                    # Создаем клавиатуру с возможностью просмотра родительских задач
                     kb = buttons.KeyboardBuilder()
                     
-                    # Добавляем кнопки для родительских задач
-                    for task in parent_tasks[:4]:  # Ограничиваем 4 задачами
+                    for task in parent_tasks[:4]:
                         completed, total, _ = get_task_progress(task.id)
                         label = f"🎯 {task.title[:18]} ({completed}/{total})"
                         kb.add(buttons.CallbackButton(label, f'view_parent_{task.id}'))
                     
-                    # Кнопка возврата
                     kb.row(buttons.CallbackButton('⬅️ Главное меню', 'back_main'))
                     
                     await cb.answer(
@@ -440,12 +423,10 @@ class TaskBot:
                     )
                     return
                 
-                # Используем пагинацию для завершения задач
                 kb, message = self.get_paginated_task_selector(user_id, tasks, 'complete')
                 
                 full_message = f"✅ **Завершение задач**\n\n{message}"
                     
-                # ИСПРАВЛЕНИЕ: Используем send_message вместо answer для стабильности
                 await self.bot.send_message(
                     full_message,
                     cb.message.recipient.chat_id,
@@ -458,7 +439,6 @@ class TaskBot:
 
         @bot.on_button_callback(lambda data: data.payload.startswith('view_parent_'))
         async def view_parent_task_handler(cb):
-            """Просмотр родительской задачи с подзадачами"""
             try:
                 if not cb.payload.startswith('view_parent_') or len(cb.payload.split('_')) < 3:
                     await cb.answer("❌ Ошибка: неверный формат")
@@ -477,13 +457,11 @@ class TaskBot:
                     await cb.answer("❌ Задача не найдена")
                     return
 
-                # Получаем подзадачи
                 subtasks = list_subtasks(task_id)
                 response = self.format_subtask_list(subtasks, task.title)
 
                 kb = self.get_parent_task_keyboard(task_id)
 
-                # ИСПРАВЛЕНИЕ: Используем send_message для стабильности
                 await self.bot.send_message(
                     response,
                     cb.message.recipient.chat_id,
@@ -518,18 +496,15 @@ class TaskBot:
                     await cb.answer("❌ Задача не найдена")
                     return
 
-                # Завершаем задачу
                 completed_task = complete_task(user_id, task_id)
 
                 if not completed_task:
                     await cb.answer("❌ Задача не найдена")
                     return
 
-                # Если это подзадача, проверяем родительскую задачу
                 if task.parent_id:
                     parent_task = get_task_by_id(task.parent_id)
                     if parent_task:
-                        # Получаем обновленный список подзадач
                         subtasks = list_subtasks(parent_task.id)
                         completed = len([t for t in subtasks if t.status == 'done'])
                         total = len(subtasks)
@@ -537,7 +512,6 @@ class TaskBot:
                         response = f"✅ **Подзадача завершена:** {completed_task['title']}\n\n"
                         response += f"🎯 **Прогресс '{parent_task.title}':** {completed}/{total}\n\n"
                         
-                        # Если все подзадачи выполнены, сообщаем об этом
                         if completed == total:
                             response += "🎉 **Все подзадачи выполнены! Задача завершена автоматически!**"
                         
@@ -550,7 +524,6 @@ class TaskBot:
                         )
                         return
 
-                # Если это обычная задача
                 updated_tasks = list_tasks(user_id)
                 task_text = self.format_task_list(updated_tasks)
 
@@ -672,23 +645,32 @@ class TaskBot:
                 user_id = self.normalize_user_id(cb.user)
                 self.active_chats[user_id] = cb.message.recipient.chat_id
                 self.update_user_activity(user_id)
-                
+
                 tasks = list_tasks(user_id)
                 user = get_or_create_user(user_id)
-                res = analyze_day(user, tasks)
-                
+
+                res = ai_enhanced_daily_analysis(user, tasks)
+
                 await cb.answer(
-                    text=f"📊 **Анализ дня:**\n\n{res['text']}",
+                    text=res['text'],
                     keyboard=self.get_back_keyboard()
                 )
-                
-                logging.info(f"📊 Пользователь {user_id} запросил анализ дня")
-                
+
+                logging.info(f"🤖 AI Анализ дня для пользователя {user_id}")
+
             except Exception as e:
                 logging.exception("Error in analyze_handler")
-                await cb.answer("❌ Ошибка при анализе дня")
+                try:
+                    tasks = list_tasks(user_id)
+                    user = get_or_create_user(user_id)
+                    res = analyze_day(user, tasks)
+                    await cb.answer(
+                        text=f"📊 **Анализ дня:**\n\n{res['text']}",
+                        keyboard=self.get_back_keyboard()
+                    )
+                except:
+                    await cb.answer("❌ Ошибка при анализе дня")
 
-        # Кнопки быстрого добавления задач
         @bot.on_button_callback('add_study')
         async def add_study_handler(cb):
             user_id = self.normalize_user_id(cb.user)
@@ -745,13 +727,11 @@ class TaskBot:
                 keyboard=self.get_add_task_keyboard()
             )
 
-        # Назад в главное меню
         @bot.on_button_callback('back_main')
         async def back_main_handler(cb):
             user_id = self.normalize_user_id(cb.user)
             self.active_chats[user_id] = cb.message.recipient.chat_id
 
-            # Очищаем состояние пагинации
             if user_id in self.pagination_state:
                 del self.pagination_state[user_id]
 
@@ -760,7 +740,6 @@ class TaskBot:
                 keyboard=self.get_main_keyboard()
             )
 
-        # Команды
         @bot.on_command('add')
         async def cmd_add(ctx):
             try:
@@ -887,19 +866,15 @@ class TaskBot:
                     
                 task_text = self.format_task_list(tasks)
                 
-                # Проверяем есть ли родительские задачи для детального просмотра
                 parent_tasks = [t for t in tasks if t.is_parent and t.status != 'done']
                 if parent_tasks:
-                    # Создаем клавиатуру с возможностью просмотра родительских задач
                     kb = buttons.KeyboardBuilder()
                     
-                    # Добавляем кнопки для родительских задач
-                    for task in parent_tasks[:4]:  # Ограничиваем 4 задачами
+                    for task in parent_tasks[:4]:  
                         completed, total, _ = get_task_progress(task.id)
                         label = f"🎯 {task.title[:18]} ({completed}/{total})"
                         kb.add(buttons.CallbackButton(label, f'view_parent_{task.id}'))
                     
-                    # Кнопка возврата
                     kb.row(buttons.CallbackButton('⬅️ Главное меню', 'back_main'))
                     
                     await ctx.reply(
@@ -927,7 +902,6 @@ class TaskBot:
                 arg = text[len("/complete"):].strip()
 
                 if not arg or not arg.isdigit():
-                    # Если не указан ID, показываем пагинацию
                     tasks = list_tasks(user_id)
                     kb, message = self.get_paginated_task_selector(user_id, tasks, 'complete')
 
@@ -948,7 +922,6 @@ class TaskBot:
                     )
                     return
 
-                # 🎯 ЕСЛИ ЭТО РОДИТЕЛЬСКАЯ ЗАДАЧА - показываем детальный просмотр
                 if task.is_parent:
                     subtasks = list_subtasks(task_id)
                     response = self.format_subtask_list(subtasks, task.title)
@@ -958,8 +931,6 @@ class TaskBot:
                         keyboard=self.get_parent_task_keyboard(task_id)
                     )
                     return
-
-                # 📝 ЕСЛИ ЭТО ОБЫЧНАЯ ЗАДАЧА - завершаем как обычно
                 completed_task = complete_task(user_id, task_id)
 
                 if not completed_task:
@@ -1066,26 +1037,35 @@ class TaskBot:
                 user_id = self.normalize_user_id(ctx.sender)
                 self.active_chats[user_id] = ctx.recipient.chat_id
                 self.update_user_activity(user_id)
-                
+
                 tasks = list_tasks(user_id)
                 user = get_or_create_user(user_id)
-                res = analyze_day(user, tasks)
-                
+
+                res = ai_enhanced_daily_analysis(user, tasks)
+
                 await ctx.reply(
-                    f"📊 **Анализ дня:**\n\n{res['text']}",
-                    keyboard=self.get_main_keyboard()
-                )
-                
-                logging.info(f"📊 Пользователь {user_id} запросил анализ дня")
-                
-            except Exception as e:
-                logging.exception("Error in cmd_analyze")
-                await ctx.reply(
-                    "❌ Ошибка при анализе дня",
+                    res['text'],
                     keyboard=self.get_main_keyboard()
                 )
 
-        # Обработка любых сообщений (не команд)
+                logging.info(f"🤖 Пользователь {user_id} запросил AI-анализ дня")
+
+            except Exception as e:
+                logging.exception("Error in cmd_analyze")
+                try:
+                    tasks = list_tasks(user_id)
+                    user = get_or_create_user(user_id)
+                    res = analyze_day(user, tasks)
+                    await ctx.reply(
+                        f"📊 **Анализ дня:**\n\n{res['text']}",
+                        keyboard=self.get_main_keyboard()
+                    )
+                except:
+                    await ctx.reply(
+                        "❌ Ошибка при анализе дня",
+                        keyboard=self.get_main_keyboard()
+                    )
+
         @bot.on_message()
         async def handle_all_messages(message):
             try:
@@ -1118,21 +1098,17 @@ class TaskBot:
 
         @bot.on_command('test_notification')
         async def cmd_test_notification(ctx):
-            """Тестовая команда для проверки уведомлений"""
             try:
                 user_id = self.normalize_user_id(ctx.sender)
                 self.active_chats[user_id] = ctx.recipient.chat_id
                 self.update_user_activity(user_id)
 
-                # Имитируем, что пользователь неактивен 1 минуту
                 self.last_activity[user_id] = datetime.now() - timedelta(minutes=2)
 
-                # Запускаем проверку в тестовом режиме
                 await self._check_inactive_users(test_mode=True)
 
                 await ctx.reply(
-                    "🧪 Тест запущен! Проверяю систему уведомлений...\n"
-                    "Если ты был неактивен более 1 минуты - должно прийти уведомление.",
+                    "🧪 Тест запущен! Проверяю систему уведомлений...\n",
                     keyboard=self.get_main_keyboard()
                 )
 
@@ -1142,12 +1118,10 @@ class TaskBot:
 
         @bot.on_command('force_notification')
         async def cmd_force_notification(ctx):
-            """Принудительная отправка тестового уведомления"""
             try:
                 user_id = self.normalize_user_id(ctx.sender)
                 self.active_chats[user_id] = ctx.recipient.chat_id
 
-                # Принудительно отправляем тестовое уведомление
                 await self._send_inactivity_notification(user_id, test_mode=True)
 
                 await ctx.reply(
@@ -1161,7 +1135,6 @@ class TaskBot:
 
         @bot.on_command('check_activity')
         async def cmd_check_activity(ctx):
-            """Проверить статус активности"""
             try:
                 user_id = self.normalize_user_id(ctx.sender)
                 self.active_chats[user_id] = ctx.recipient.chat_id
@@ -1198,10 +1171,8 @@ class TaskBot:
                 self.active_chats[user_id] = cb.message.recipient.chat_id
                 self.update_user_activity(user_id)
 
-                # Получаем номер страницы
                 page_num = int(cb.payload.split('_')[1])
 
-                # Обновляем состояние
                 if user_id in self.pagination_state:
                     self.pagination_state[user_id]['page'] = page_num
                     action_type = self.pagination_state[user_id]['action']
@@ -1216,7 +1187,6 @@ class TaskBot:
                 else:
                     full_message = f"🔍 **Просмотр задач**\n\n{message}"
 
-                # ИСПРАВЛЕНИЕ: Используем send_message для стабильности
                 await self.bot.send_message(
                     full_message,
                     cb.message.recipient.chat_id,

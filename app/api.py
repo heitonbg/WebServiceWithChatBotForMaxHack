@@ -2,22 +2,22 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
-import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from models import SessionLocal, User, Task, init_db, Project, BoardColumn, BoardCard
 from services import (
-    get_or_create_user, add_task_for_user, list_tasks, complete_task, 
-    analyze_day, sync_user_from_max, get_user_stats, update_user_profile,
+    get_or_create_user, add_task_for_user, list_tasks, complete_task,
+    sync_user_from_max, get_user_stats, update_user_profile,
     get_user_by_external_id, get_today_stats, get_user_by_max_id,
     sync_tasks_between_users, ensure_user_sync,
     create_project, get_user_projects, create_card, get_project_with_details,
     update_card_position, delete_card, delete_project,
-    parse_date, validate_date, list_tasks_by_date_range,  
-    add_subtask, complete_subtask, list_subtasks,        
+    parse_date, validate_date, list_tasks_by_date_range,
+    add_subtask, complete_subtask, list_subtasks,
     update_task, delete_task, decompose_task, random_motivation,
-    get_task_by_id, get_task_progress, complete_parent_task
+    get_task_by_id, get_task_progress, complete_parent_task, ai_enhanced_daily_analysis, analyze_day
 )
 
 app = FastAPI(title="TaskBot API")
@@ -60,8 +60,8 @@ class TaskResponse(BaseModel):
     difficulty: int
     status: str
     estimated_minutes: int
-    created_at: datetime.datetime
-    task_date: datetime.datetime
+    created_at: datetime
+    task_date: datetime
     parent_task_id: Optional[int]
     subtasks: List['TaskResponse'] = []
 
@@ -110,7 +110,7 @@ class CardCreate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = "#ffffff"
     tags: Optional[List[str]] = None
-    due_date: Optional[datetime.datetime] = None
+    due_date: Optional[datetime] = None
     estimated_minutes: Optional[int] = 0
     priority: Optional[int] = 1
 
@@ -119,7 +119,7 @@ class CardUpdate(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = None
     tags: Optional[List[str]] = None
-    due_date: Optional[datetime.datetime] = None
+    due_date: Optional[datetime] = None
     estimated_minutes: Optional[int] = None
     priority: Optional[int] = None
     column_id: Optional[int] = None
@@ -150,6 +150,99 @@ async def get_tasks(external_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/user/verify-id")  
+async def verify_user_id(external_id: str, entered_id: str, db: Session = Depends(get_db)):
+    try:
+        user = db.query(User).filter_by(external_id=external_id).first()
+
+        if not user:
+            return {"valid": False, "error": "User not found"}
+
+        user_id_from_external = external_id.replace("max_", "")
+
+        if entered_id == user_id_from_external:  
+            return {"valid": True, "user": {"name": user.name, "id": user.id}}
+        else:
+            return {"valid": False, "error": "ID does not match"}
+
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+@app.get("/user/ai-analytics")
+async def get_ai_analytics(external_id: str, db: Session = Depends(get_db)):
+    try:
+        tasks = list_tasks(external_id)
+        user = get_or_create_user(external_id)
+
+        ai_analysis = ai_enhanced_daily_analysis(user, tasks, for_react=True)
+
+        today_tasks = [t for t in tasks if t.created_at.date() == datetime.utcnow().date()]
+        total_minutes = sum(t.estimated_minutes for t in today_tasks)
+        completed_minutes = sum(t.estimated_minutes for t in today_tasks if t.status == 'done')
+        time_utilization = (completed_minutes / total_minutes * 100) if total_minutes > 0 else 0
+
+        response_data = {
+            "completed_today": ai_analysis['stats']['done'],
+            "pending_today": ai_analysis['stats']['pending'],
+            "total_today": ai_analysis['stats']['total'],
+            "efficiency_rate": ai_analysis['stats']['completion_rate'],
+            "total_minutes": total_minutes,
+            "completed_minutes": completed_minutes,
+            "time_utilization": int(time_utilization),
+            "ai_analysis": ai_analysis.get('react_format', {
+                "productivity_score": ai_analysis['stats']['completion_rate'],
+                "insights": [ai_analysis['text']],
+                "recommendations": [ai_analysis.get('recommendation', 'Продолжайте в том же духе!')],
+                "energy_level": "medium",
+                "mood_analysis": "neutral"
+            }),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        return response_data
+        
+    except Exception as e:
+        print(f"Error in AI analytics: {e}")
+        try:
+            tasks = list_tasks(external_id)
+            today_tasks = [t for t in tasks if t.created_at.date() == datetime.utcnow().date()]
+            completed_today = len([t for t in today_tasks if t.status == 'done'])
+            pending_today = len([t for t in today_tasks if t.status != 'done'])
+            total_today = len(today_tasks)
+            efficiency = (completed_today / total_today * 100) if total_today > 0 else 0
+            
+            total_minutes = sum(t.estimated_minutes for t in today_tasks)
+            completed_minutes = sum(t.estimated_minutes for t in today_tasks if t.status == ['done'])
+            time_utilization = (completed_minutes / total_minutes * 100) if total_minutes > 0 else 0
+
+            return {
+                "completed_today": completed_today,
+                "pending_today": pending_today,
+                "total_today": total_today,
+                "efficiency_rate": efficiency,
+                "total_minutes": total_minutes,
+                "completed_minutes": completed_minutes,
+                "time_utilization": int(time_utilization),
+                "ai_analysis": {
+                    "productivity_score": efficiency,
+                    "insights": [
+                        f"Завершено {completed_today} из {total_today} задач",
+                        "Базовый анализ продуктивности"
+                    ],
+                    "recommendations": [
+                        "Используйте технику Pomodoro для концентрации",
+                        "Планируйте задачи заранее"
+                    ],
+                    "energy_level": "high" if efficiency >= 70 else "medium",
+                    "mood_analysis": "positive" if efficiency >= 70 else "neutral"
+                }
+            }
+        except Exception as fallback_error:
+            print(f"Fallback also failed: {fallback_error}")
+            raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/tasks/create")
 async def create_task(task_data: TaskCreate, external_id: str, db: Session = Depends(get_db)):
     try:
@@ -159,7 +252,7 @@ async def create_task(task_data: TaskCreate, external_id: str, db: Session = Dep
             if not task_date:
                 raise HTTPException(status_code=400, detail="❌ Неверный формат даты. Используй: дд.мм.гггг или гггг-мм-дд")
             
-            today = datetime.datetime.utcnow().date()
+            today = datetime.utcnow().date()
             if task_date.date() < today:
                 raise HTTPException(status_code=400, detail=f"❌ Дата не может быть раньше сегодняшней ({today.strftime('%d.%m.%Y')})")
 
@@ -308,9 +401,19 @@ async def get_user_analytics(external_id: str, db: Session = Depends(get_db)):
     try:
         tasks = list_tasks(external_id)
         user = get_or_create_user(external_id)
+        
         analytics = analyze_day(user, tasks)
-        return analytics
+        
+        ai_analysis = ai_enhanced_daily_analysis(user, tasks, for_react=False)
+        
+        result = {
+            **analytics,
+            'ai_analysis': ai_analysis
+        }
+        
+        return result
     except Exception as e:
+        print(f"Error in bot analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/user/profile")
@@ -409,7 +512,7 @@ async def get_today_stats_endpoint(external_id: str, db: Session = Depends(get_d
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
         "service": "TaskBot API"
     }
 
@@ -422,7 +525,7 @@ async def decompose_task_endpoint(task_data: TaskCreate, external_id: str, db: S
             if not task_date:
                 raise HTTPException(status_code=400, detail="❌ Неверный формат даты. Используй: дд.мм.гггг или гггг-мм-дд")
             
-            today = datetime.datetime.utcnow().date()
+            today = datetime.utcnow().date()
             if task_date.date() < today:
                 raise HTTPException(status_code=400, detail=f"❌ Дата не может быть раньше сегодняшней ({today.strftime('%d.%m.%Y')})")
 
@@ -513,7 +616,7 @@ async def sync_users(source_external_id: str, target_external_id: str, db: Sessi
 @app.get("/user/daily-stats")
 async def get_daily_stats(external_id: str, db: Session = Depends(get_db)):
     try:
-        today = datetime.datetime.utcnow().date()
+        today = datetime.utcnow().date()
         tasks = list_tasks(external_id)
         
         today_tasks = [t for t in tasks if t.created_at.date() == today]
@@ -585,7 +688,7 @@ async def get_productivity_stats(external_id: str, db: Session = Depends(get_db)
         unique_dates = sorted(set(completed_dates), reverse=True)
         
         streak = 0
-        today = datetime.datetime.utcnow().date()
+        today = datetime.utcnow().date()
         for i, date in enumerate(unique_dates):
             if (today - date).days == i:
                 streak += 1
@@ -766,7 +869,7 @@ async def update_card_endpoint(card_id: int, card_data: CardUpdate, external_id:
         if card_data.position is not None:
             card.position = card_data.position
         
-        card.updated_at = datetime.datetime.utcnow()
+        card.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(card)
         
@@ -885,7 +988,7 @@ async def update_project_endpoint(project_id: int, project_data: ProjectCreate, 
         if project_data.color is not None:
             project.color = project_data.color
         
-        project.updated_at = datetime.datetime.utcnow()
+        project.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(project)
         

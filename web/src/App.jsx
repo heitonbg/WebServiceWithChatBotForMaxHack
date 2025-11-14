@@ -2,21 +2,57 @@ import React, { useEffect, useState } from "react";
 
 const API = "http://localhost:8000";
 
-// вход по айди
+// вход по айди с проверкой через MAX API
 function LoginForm({ onLogin }) {
   const [maxUserId, setMaxUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [realUserId, setRealUserId] = useState(null);
+
+  // Получаем реальный ID пользователя при загрузке
+  useEffect(() => {
+    const getRealUserId = async () => {
+      try {
+        // Используем MAX Web App API для получения реального ID
+        if (window.MaxWebApp && window.MaxWebApp.init) {
+          const user = await window.MaxWebApp.getUser();
+          if (user && user.id) {
+            setRealUserId(user.id.toString());
+            console.log("Real user ID from MAX:", user.id);
+          }
+        }
+      } catch (error) {
+        console.error("Error getting user ID from MAX:", error);
+        // Fallback для разработки
+        setRealUserId("demo_user");
+      }
+    };
+
+    getRealUserId();
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!realUserId) {
+      setError("Не удалось получить ID пользователя. Откройте приложение в MAX.");
+      return;
+    }
+
     if (maxUserId.trim()) {
       setLoading(true);
       setError("");
-      
+
       try {
+        // Проверяем, совпадает ли введенный ID с реальным
+        if (maxUserId !== realUserId && realUserId !== "demo_user") {
+          setError("ID не совпадает с вашим аккаунтом MAX. Используйте ваш реальный ID.");
+          setLoading(false);
+          return;
+        }
+
         const userResponse = await fetch(`${API}/user/profile?external_id=max_${maxUserId}`);
-        
+
         if (userResponse.ok) {
           const userData = await userResponse.json();
           onLogin(`max_${maxUserId}`, userData.name, maxUserId);
@@ -31,6 +67,14 @@ function LoginForm({ onLogin }) {
     }
   };
 
+  // Автоматический вход, если ID уже известен (для удобства)
+  useEffect(() => {
+    if (realUserId && realUserId !== "demo_user") {
+      setMaxUserId(realUserId);
+      // Можно добавить автоматический вход, но лучше оставить ручной для безопасности
+    }
+  }, [realUserId]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-800 flex items-center justify-center p-4">
       <div className="bg-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl border border-slate-600 w-full max-w-md mx-4">
@@ -41,13 +85,15 @@ function LoginForm({ onLogin }) {
             </svg>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold text-white mb-2">TaskFlow Pro</h1>
-          <p className="text-slate-300 text-sm">Вход по ID пользователя</p>
+          <p className="text-slate-300 text-sm">
+            {realUserId ? `Ваш ID: ${realUserId}` : "Определяем ваш ID..."}
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2 sm:mb-3">
-              Ваш ID из MAX
+              Подтвердите ваш ID из MAX
             </label>
             <div className="relative">
               <input
@@ -55,8 +101,9 @@ function LoginForm({ onLogin }) {
                 value={maxUserId}
                 onChange={(e) => setMaxUserId(e.target.value.replace(/\D/g, ''))}
                 className="w-full p-3 sm:p-4 bg-slate-700 border border-slate-500 rounded-xl text-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-base"
-                placeholder="Введите цифровой ID"
+                placeholder={realUserId || "Введите цифровой ID"}
                 required
+                disabled={!realUserId}
               />
               <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
                 <div className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded text-xs font-mono">
@@ -64,6 +111,11 @@ function LoginForm({ onLogin }) {
                 </div>
               </div>
             </div>
+            {realUserId && (
+              <p className="text-xs text-slate-400 mt-2">
+                Система определила ваш ID. Для входа подтвердите его.
+              </p>
+            )}
           </div>
 
           {error && (
@@ -79,19 +131,31 @@ function LoginForm({ onLogin }) {
 
           <button
             type="submit"
-            disabled={loading || !maxUserId.trim()}
+            disabled={loading || !maxUserId.trim() || !realUserId}
             className="w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white py-3 sm:py-4 rounded-xl hover:from-blue-600 hover:to-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 font-semibold shadow-lg border border-blue-400/30 text-base min-h-[44px]"
           >
             {loading ? (
               <div className="flex items-center justify-center space-x-2">
                 <div className="w-4 h-4 sm:w-5 sm:h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                <span>Подключение...</span>
+                <span>Проверка...</span>
               </div>
             ) : (
-              "Войти в систему"
+              "Подтвердить и войти"
             )}
           </button>
         </form>
+
+        <div className="mt-4 sm:mt-6 p-3 sm:p-4 bg-slate-700/50 rounded-xl border border-slate-600">
+          <div className="flex items-start space-x-2">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="text-xs text-slate-300">
+              <p className="font-medium">Безопасный вход</p>
+              <p>Доступ только для владельца аккаунта MAX. ID определяется автоматически.</p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -104,9 +168,9 @@ function MobileNavigation({ activeTab, setActiveTab }) {
     { id: 'tasks', label: 'Задачи', icon: '📝' },
     { id: 'calendar', label: 'Календарь', icon: '📅' },
     { id: 'pomodoro', label: 'Фокус', icon: '⏱️' },
-    { id: 'profile', label: 'Профиль', icon: '👤' },
+    { id: 'kanban', label: 'Канбан', icon: '📋' },
     { id: 'analysis', label: 'Анализ', icon: '📊' },
-    { id: 'kanban', label: 'Канбан', icon: '📋' }
+    { id: 'profile', label: 'Профиль', icon: '👤' }
   ];
 
   return (

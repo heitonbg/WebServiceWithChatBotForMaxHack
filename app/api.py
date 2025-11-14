@@ -16,7 +16,8 @@ from services import (
     update_card_position, delete_card, delete_project,
     parse_date, validate_date, list_tasks_by_date_range,  
     add_subtask, complete_subtask, list_subtasks,        
-    update_task, delete_task                             
+    update_task, delete_task, decompose_task, random_motivation,
+    get_task_by_id, get_task_progress, complete_parent_task
 )
 
 app = FastAPI(title="TaskBot API")
@@ -415,8 +416,6 @@ async def health_check():
 @app.post("/tasks/decompose")
 async def decompose_task_endpoint(task_data: TaskCreate, external_id: str, db: Session = Depends(get_db)):
     try:
-        from services import decompose_task
-        
         task_date = None
         if task_data.task_date:
             task_date = parse_date(task_data.task_date)

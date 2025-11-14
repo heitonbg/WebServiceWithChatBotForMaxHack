@@ -399,23 +399,16 @@ def get_task_by_id(task_id):
     finally:
         db.close()
 
-def list_subtasks(external_id, parent_task_id):
+def list_subtasks(parent_task_id):
+    """
+    Получить все подзадачи родительской задачи
+    """
     db = SessionLocal()
     try:
-        external_id = normalize_user_id(external_id)
-        
-        user = db.query(User).filter_by(external_id=external_id).first()
-        if not user:
-            return []
-
-        parent_task = db.query(Task).filter_by(id=parent_task_id, user_id=user.id).first()
-        if not parent_task:
-            return []
-
-        subtasks = db.query(Task).filter_by(parent_id=parent_task_id, user_id=user.id).order_by(Task.id).all()
+        subtasks = db.query(Task).filter_by(parent_id=parent_task_id).order_by(Task.id).all()
         return subtasks
     except Exception as e:
-        print(f"Error listing subtasks: {e}")
+        print(f"💥 Ошибка получения подзадач: {e}")
         return []
     finally:
         db.close()

@@ -25,7 +25,7 @@ LevelUp — это современная система управления з
 project/
 ├── requirements.txt        # Зависимости Python
 ├── main.py                 # Точка входа приложения
-├── .env                    # Переменные окружения
+├── .env                    # Переменные окружения (ПОМЕНЯТЬ ВАЖНО)
 ├── __init__.py
 └── app/
     ├── __init__.py
@@ -42,6 +42,7 @@ project/
     ├── index.html
     └── src/
         ├── app.jsx
+        |── config.js # URL ХОСТ БОТА
         ├── main.jsx
         └── index.css
 ```
@@ -108,9 +109,12 @@ npm run dev
 ### 3. Запуск через Docker
 
 ```bash
-docker build -t taskbot .
-docker run -p 8000:8000 -p 5173:5173 taskbot
+**ВАЖНО** в config.js и .env ПОМЕНЯТЬ всё на свое, там указаны localhost и вы не войдете на сайт, потому-что есть проверка через MAX Bridge, используйте миниапп для этого
+git clone https://github.com/heitonbg/WebServiceWithChatBotForMaxHack.git
+sudo docker build -t my-hackathon-bot .
+sudo docker run -p 3000:5173 -p 8000:8000 --env-file .env --name running-bot my-hackathon-bot
 ```
+
 
 ---
 

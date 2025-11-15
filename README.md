@@ -110,6 +110,9 @@ npm run dev
 **ВАЖНО** в config.js и .env ПОМЕНЯТЬ всё на свое, там указаны localhost и вы не войдете на сайт, потому-что есть проверка через MAX Bridge, используйте миниапп для этого <br/>
 
 <img width="606" height="278" alt="изображение" src="https://github.com/user-attachments/assets/004f693f-d3d8-4e15-b7e6-60e33d7fb472" />
+<br/>
+<img width="937" height="346" alt="изображение" src="https://github.com/user-attachments/assets/0df214ab-afe1-464a-bbc6-3026eb8d03f8" />
+
 
 ```bash
 git clone https://github.com/heitonbg/WebServiceWithChatBotForMaxHack.git

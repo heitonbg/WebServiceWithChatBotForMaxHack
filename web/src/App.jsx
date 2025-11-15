@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 
-const API = "https://servicebotformax-iwrawww.amvera.io";
+const API = "https://servicebotformax-iwrawww.amvera.io"; // URL ХОСТА ГДЕ ЗАПУЩЕН БОТ
 
 function LoadingScreen() {
   return (

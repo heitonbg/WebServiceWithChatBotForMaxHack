@@ -107,7 +107,8 @@ npm run dev
 ```
 
 ### 3. Запуск через Docker
-**ВАЖНО** в config.js и .env ПОМЕНЯТЬ всё на свое, там указаны localhost и вы не войдете на сайт, потому-что есть проверка через MAX Bridge, используйте миниапп для этого
+**ВАЖНО** в config.js и .env ПОМЕНЯТЬ всё на свое, там указаны localhost и вы не войдете на сайт, потому-что есть проверка через MAX Bridge, используйте миниапп для этого <br/>
+
 <img width="606" height="278" alt="изображение" src="https://github.com/user-attachments/assets/004f693f-d3d8-4e15-b7e6-60e33d7fb472" />
 
 ```bash

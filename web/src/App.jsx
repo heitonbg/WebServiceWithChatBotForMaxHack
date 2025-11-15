@@ -1,198 +1,171 @@
 import React, { useEffect, useState } from "react";
+import config from "./config";
 
-const API = import.meta.env.VITE_BOT_URL
+const API = config.URL_BOT; // ПЕРЕМЕННАЯ В CONFIG.JS
 
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-800 flex items-center justify-center p-4">
+      <div className="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-600 w-full max-w-md mx-4 text-center">
+        <div className="w-16 h-16 bg-gradient-to-r from-blue-500 to-purple-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
+          <div className="w-8 h-8 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+        </div>
+        <h2 className="text-xl font-bold text-white mb-3">Загрузка</h2>
+        <p className="text-slate-300 mb-2">Подключаемся к MAX...</p>
+        <p className="text-slate-400 text-sm">Определяем ваш аккаунт</p>
+      </div>
+    </div>
+  );
+}
 
-// вход по айди - РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ MAX API
-function LoginForm({ onLogin }) {
-  const [maxUserId, setMaxUserId] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [realMaxUserId, setRealMaxUserId] = useState(null);
+// Компонент ошибки
+function ErrorScreen({ error, onRetry }) {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-800 flex items-center justify-center p-4">
+      <div className="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-600 w-full max-w-md mx-4 text-center">
+        <div className="w-16 h-16 bg-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
+          <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <h2 className="text-xl font-bold text-white mb-3">Ошибка подключения</h2>
+        <p className="text-slate-300 mb-4">{error}</p>
+        <button
+          onClick={onRetry}
+          className="w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white py-4 rounded-xl hover:from-blue-600 hover:to-purple-600 transition-colors font-semibold"
+        >
+          Попробовать снова
+        </button>
+      </div>
+    </div>
+  );
+}
 
-  // Получаем реальный ID пользователя из MAX
+// Автоматический вход через MAX Bridge
+function AutoLogin({ onLogin, onError }) {
+  const [status, setStatus] = useState("Инициализация...");
+
   useEffect(() => {
-    const getRealUserId = () => {
-      try {
-        console.log("WebApp object:", window.WebApp);
-        console.log("initDataUnsafe:", window.WebApp?.initDataUnsafe);
-
-        if (window.WebApp && window.WebApp.initDataUnsafe && window.WebApp.initDataUnsafe.user) {
-          const realUserId = window.WebApp.initDataUnsafe.user.id.toString();
-          console.log("✅ Real user ID from MAX:", realUserId);
-          setRealMaxUserId(realUserId);
-        } else {
-          console.error("❌ Cannot get user ID from MAX");
-          setRealMaxUserId("NOT_FOUND");
-        }
-      } catch (error) {
-        console.error("Error getting MAX user ID:", error);
-        setRealMaxUserId("ERROR");
-      }
-    };
-
-    getRealUserId();
+    initializeMaxLogin();
   }, []);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const initializeMaxLogin = async () => {
+    try {
+      setStatus("Проверяем MAX Bridge...");
+      
+      if (!window.WebApp) {
+        throw new Error("MAX Bridge не доступен. Откройте приложение через MAX мессенджер.");
+      }
 
-    if (!realMaxUserId || realMaxUserId === "NOT_FOUND" || realMaxUserId === "ERROR") {
-      setError("❌ Не удалось определить ваш аккаунт MAX. Откройте приложение через MAX.");
-      return;
-    }
+      setStatus("Получаем данные пользователя...");
+      
+      const initData = window.WebApp.initDataUnsafe;
+      console.log("MAX initData:", initData);
 
-    if (maxUserId.trim()) {
-      setLoading(true);
-      setError("");
+      if (!initData || !initData.user) {
+        throw new Error("Не удалось получить данные пользователя из MAX.");
+      }
+
+      const user = initData.user;
+      const maxUserId = user.id.toString();
+      
+      setStatus(`Привет, ${user.first_name || 'Пользователь'}!`);
+
+      const externalId = `max_${maxUserId}`;
+      
+      setStatus("Синхронизация с сервером...");
 
       try {
-        // СТРОГАЯ ПРОВЕРКА: введенный ID должен совпадать с реальным ID из MAX
-        console.log(`🔍 Checking: entered=${maxUserId}, real=${realMaxUserId}`);
-
-        if (maxUserId !== realMaxUserId) {
-          setError(`❌ Доступ запрещен! Это не ваш аккаунт. Ваш ID: ${realMaxUserId}`);
-          setLoading(false);
-          return;
-        }
-
-        // Проверяем что пользователь есть в базе
-        const userResponse = await fetch(`${API}/user/profile?external_id=max_${maxUserId}`);
-
+        const userResponse = await fetch(`${API}/user/profile?external_id=${externalId}`);
+        
         if (userResponse.ok) {
           const userData = await userResponse.json();
-          onLogin(`max_${maxUserId}`, userData.name, maxUserId);
+          completeLogin(externalId, userData.name, user, initData);
         } else {
-          setError("❌ Пользователь с таким ID не найден. Начните с бота в MAX!");
+          await createNewUser(externalId, user, initData);
         }
       } catch (error) {
-        setError("❌ Ошибка подключения к серверу");
-      } finally {
-        setLoading(false);
+        console.error("Ошибка при проверке пользователя:", error);
+        await createNewUser(externalId, user, initData);
       }
+
+    } catch (error) {
+      console.error("Ошибка автоматического входа:", error);
+      onError(error.message);
     }
   };
 
-  // Автозаполнение когда получили реальный ID
-  useEffect(() => {
-    if (realMaxUserId && realMaxUserId !== "NOT_FOUND" && realMaxUserId !== "ERROR") {
-      setMaxUserId(realMaxUserId);
-    }
-  }, [realMaxUserId]);
+  const createNewUser = async (externalId, user, initData) => {
+    setStatus("Создаем ваш профиль...");
+    
+    try {
+      const createResponse = await fetch(`${API}/user/create?external_id=${externalId}&name=${encodeURIComponent(getUserName(user))}`);
+      
+      if (!createResponse.ok) {
+        throw new Error("Не удалось создать пользователя на сервере");
+      }
 
-  // Если не можем получить ID
-  if (realMaxUserId === "NOT_FOUND" || realMaxUserId === "ERROR") {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-800 flex items-center justify-center p-4">
-        <div className="bg-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl border border-slate-600 w-full max-w-md mx-4 text-center">
-          <div className="w-14 h-14 bg-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-bold text-white mb-2">Требуется MAX</h2>
-          <p className="text-slate-300 mb-4">
-            Приложение должно быть открыто через MAX мессенджер.
-          </p>
-          <div className="bg-slate-700/50 rounded-xl p-4 text-left mb-4">
-            <p className="text-sm text-slate-300 mb-2">Для входа:</p>
-            <ol className="text-sm text-slate-400 space-y-1 list-decimal list-inside">
-              <li>Откройте приложение через MAX</li>
-              <li>Начните с бота для регистрации</li>
-              <li>Используйте ваш реальный ID</li>
-            </ol>
-          </div>
-          <button
-            onClick={() => window.location.reload()}
-            className="w-full bg-blue-500 text-white py-3 rounded-xl hover:bg-blue-600 transition-colors font-semibold"
-          >
-            Обновить страницу
-          </button>
-        </div>
-      </div>
-    );
-  }
+      await syncUserData(externalId, user, initData);
+      
+      completeLogin(externalId, getUserName(user), user, initData);
+    } catch (error) {
+      console.error("Ошибка создания пользователя:", error);
+      onError("Ошибка создания профиля: " + error.message);
+    }
+  };
+
+  const syncUserData = async (externalId, user, initData) => {
+    try {
+      await fetch(`${API}/user/sync?external_id=${externalId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          first_name: user.first_name,
+          last_name: user.last_name,
+          username: user.username,
+          language_code: user.language_code,
+          photo_url: user.photo_url
+        }),
+      });
+    } catch (error) {
+      console.warn("Не удалось синхронизировать дополнительные данные:", error);
+    }
+  };
+
+  const completeLogin = (externalId, userName, userData, initData) => {
+    setStatus("Вход выполнен!");
+    
+    onLogin({
+      id: externalId,
+      name: userName,
+      maxUserId: userData.id.toString(),
+      userData: userData,
+      initData: initData
+    });
+  };
+
+  const getUserName = (user) => {
+    if (user.first_name && user.last_name) {
+      return `${user.first_name} ${user.last_name}`;
+    }
+    return user.first_name || user.username || 'Пользователь MAX';
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-800 flex items-center justify-center p-4">
-      <div className="bg-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl border border-slate-600 w-full max-w-md mx-4">
-        <div className="text-center mb-6 sm:mb-8">
-          <div className="w-14 h-14 sm:w-16 sm:h-16 bg-gradient-to-r from-blue-500 to-purple-500 rounded-2xl flex items-center justify-center shadow-lg mx-auto mb-3 sm:mb-4">
-            <svg className="w-6 h-6 sm:w-8 sm:h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <h1 className="text-xl sm:text-2xl font-bold text-white mb-2">LevelUp</h1>
-          <p className="text-slate-300 text-sm">
-            {realMaxUserId ? `Безопасный вход - ваш ID: ${realMaxUserId}` : "Определяем ваш аккаунт..."}
-          </p>
+      <div className="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-600 w-full max-w-md mx-4 text-center">
+        <div className="w-16 h-16 bg-gradient-to-r from-blue-500 to-purple-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
+          <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
         </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2 sm:mb-3">
-              {realMaxUserId ? "Подтвердите вход" : "Определяем ваш ID..."}
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                value={maxUserId}
-                onChange={(e) => setMaxUserId(e.target.value.replace(/\D/g, ''))}
-                className="w-full p-3 sm:p-4 bg-slate-700 border border-slate-500 rounded-xl text-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-base"
-                placeholder={realMaxUserId || "Ожидание MAX..."}
-                required
-                disabled={!realMaxUserId}
-              />
-              <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                <div className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded text-xs font-mono">
-                  ID
-                </div>
-              </div>
-            </div>
-            {realMaxUserId && (
-              <p className="text-xs text-green-400 mt-2">
-                ✓ MAX определил ваш аккаунт
-              </p>
-            )}
-          </div>
-
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 sm:p-4">
-              <div className="flex items-center space-x-2 text-red-300">
-                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span className="text-sm">{error}</span>
-              </div>
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading || !maxUserId.trim() || !realMaxUserId}
-            className="w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white py-3 sm:py-4 rounded-xl hover:from-blue-600 hover:to-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 font-semibold shadow-lg border border-blue-400/30 text-base min-h-[44px]"
-          >
-            {loading ? (
-              <div className="flex items-center justify-center space-x-2">
-                <div className="w-4 h-4 sm:w-5 sm:h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                <span>Проверка доступа...</span>
-              </div>
-            ) : (
-              "Подтвердить и войти"
-            )}
-          </button>
-        </form>
-
-        {realMaxUserId && (
-          <div className="mt-4 sm:mt-6 p-3 sm:p-4 bg-green-500/10 rounded-xl border border-green-500/30">
-            <div className="flex items-center space-x-2 text-green-400">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-              <span className="text-sm">MAX подтвердил ваш аккаунт. Вход безопасен.</span>
-            </div>
-          </div>
-        )}
+        <h2 className="text-xl font-bold text-white mb-3">Автоматический вход</h2>
+        <p className="text-slate-300 mb-2">{status}</p>
+        <div className="flex justify-center mt-4">
+          <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
       </div>
     </div>
   );
@@ -212,7 +185,7 @@ function MobileNavigation({ activeTab, setActiveTab }) {
 
   return (
     <>
-      {/* крабсбургер(мобил) */}
+      {/* Мобильное меню */}
       <div className="lg:hidden">
         <button
           onClick={() => setShowMenu(!showMenu)}
@@ -249,7 +222,7 @@ function MobileNavigation({ activeTab, setActiveTab }) {
         )}
       </div>
 
-      {/* навигация */}
+      {/* Десктопная навигация */}
       <div className="hidden lg:flex overflow-x-auto space-x-1 bg-slate-700 p-1 rounded-xl border border-slate-500 mb-6 scrollbar-hide">
         {tabs.map(tab => (
           <button
@@ -269,7 +242,7 @@ function MobileNavigation({ activeTab, setActiveTab }) {
   );
 }
 
-// панель подзадач
+// Панель подзадач
 function SubtasksPanel({ task, onClose, onAddSubtask, onCompleteSubtask, onRefresh }) {
   const [subtasks, setSubtasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -505,7 +478,7 @@ function SubtasksPanel({ task, onClose, onAddSubtask, onCompleteSubtask, onRefre
   );
 }
 
-// список задач таск лист
+// Список задач
 function TaskList({ tasks, onComplete, onAddTask, currentUser, onTaskUpdate }) {
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -542,7 +515,7 @@ function TaskList({ tasks, onComplete, onAddTask, currentUser, onTaskUpdate }) {
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      {/* заголовок и кнопка */}
+      {/* Заголовок и кнопка */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
         <div className="flex-1 min-w-0">
           <h2 className="text-lg sm:text-xl font-bold text-white truncate">Мои задачи</h2>
@@ -558,7 +531,7 @@ function TaskList({ tasks, onComplete, onAddTask, currentUser, onTaskUpdate }) {
         </button>
       </div>
 
-      {/* поиск и фильтры */}
+      {/* Поиск и фильтры */}
       <div className="flex flex-col gap-3">
         <div className="flex-1">
           <div className="relative">
@@ -727,7 +700,7 @@ function TaskList({ tasks, onComplete, onAddTask, currentUser, onTaskUpdate }) {
   );
 }
 
-// календарь энергии
+// Календарь энергии
 function EnergyCalendar({ tasks, onAddTask }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -804,7 +777,7 @@ function EnergyCalendar({ tasks, onAddTask }) {
               {date.getDate()}
             </div>
             
-            {/* индикаторы задач - скрываем на маленьких экранах */}
+            {/* Индикаторы задач */}
             {dayTasks.length > 0 && (
               <div className="hidden sm:flex justify-center space-x-1 mb-1">
                 {dayTasks.slice(0, 2).map((task, index) => (
@@ -823,7 +796,7 @@ function EnergyCalendar({ tasks, onAddTask }) {
               </div>
             )}
             
-            {/* energylevel - показываем только на больших экранах */}
+            {/* Уровень энергии */}
             {energyLevel > 0 && (
               <div className="hidden sm:block text-[10px] text-white/90 font-semibold">
                 {Math.round(energyLevel)}%
@@ -882,7 +855,7 @@ function EnergyCalendar({ tasks, onAddTask }) {
         </div>
       </div>
 
-      {/* Кабан доска */}
+      {/* Календарная сетка */}
       <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-3 sm:mb-4">
         {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => (
           <div key={day} className="text-center font-medium text-slate-400 py-1 sm:py-2 text-xs sm:text-sm">
@@ -895,7 +868,7 @@ function EnergyCalendar({ tasks, onAddTask }) {
         {renderMonthView()}
       </div>
 
-      {/* задачи выбранного дня */}
+      {/* Задачи выбранного дня */}
       {selectedDayTasks.length > 0 && (
         <div className="bg-slate-700 rounded-xl p-3 sm:p-4 border border-slate-500 mt-4">
           <h3 className="text-base sm:text-lg font-semibold text-white mb-2 sm:mb-3">
@@ -983,7 +956,7 @@ function PomodoroTimer({ tasks, onTaskComplete }) {
         <p className="text-slate-300 text-sm">Метод Pomodoro для максимальной продуктивности</p>
       </div>
 
-      {/* таймер */}
+      {/* Таймер */}
       <div className={`relative rounded-2xl p-4 sm:p-8 text-center border transition-all duration-300 ${
         mode === 'work' 
           ? 'bg-gradient-to-br from-red-500/10 to-orange-500/10 border-red-500/30' 
@@ -1030,7 +1003,7 @@ function PomodoroTimer({ tasks, onTaskComplete }) {
         </div>
       </div>
 
-      {/* фокусировка вхождение в поток */}
+      {/* Выбор задачи для фокусировки */}
       <div className="bg-slate-700 rounded-xl p-4 sm:p-6 border border-slate-500">
         <label className="block text-white font-semibold mb-3 sm:mb-4 text-sm sm:text-base">
           Выберите задачу для фокусировки:
@@ -1069,7 +1042,7 @@ function PomodoroTimer({ tasks, onTaskComplete }) {
   );
 }
 
-// юзерпрофиль
+// Профиль пользователя с аватаркой из MAX
 function UserProfile({ tasks, currentUser }) {
   const completedTasks = tasks.filter(t => t.status === 'done').length;
   const totalTasks = tasks.length;
@@ -1077,10 +1050,17 @@ function UserProfile({ tasks, currentUser }) {
   const totalMinutes = tasks.reduce((sum, task) => sum + task.estimated_minutes, 0);
   const totalWorkHours = Math.round(totalMinutes / 60);
   
-  const getAvatarUrl = (userId) => {
+  // Получаем аватарку из MAX или создаем градиентную
+  const getAvatarUrl = () => {
+    if (currentUser.userData?.photo_url) {
+      return currentUser.userData.photo_url;
+    }
+    
+    // Градиентная аватарка на основе ID
     const colors = ['ff6b6b', '4ecdc4', '45b7d1', '96ceb4', 'feca57', 'ff9ff3', '54a0ff'];
-    const color = colors[userId.length % colors.length];
-    return `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.name)}&background=${color}&color=fff&size=128&bold=true`;
+    const color = colors[currentUser.id.length % colors.length];
+    const name = currentUser.name || 'Пользователь';
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=${color}&color=fff&size=128&bold=true`;
   };
 
   const getProductivityLevel = () => {
@@ -1130,10 +1110,17 @@ function UserProfile({ tasks, currentUser }) {
         <div className="flex items-center space-x-4 sm:space-x-6">
           <div className="relative flex-shrink-0">
             <img 
-              src={getAvatarUrl(currentUser.id)}
+              src={getAvatarUrl()}
               alt={currentUser.name}
               className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl border-4 border-blue-500 shadow"
             />
+            {currentUser.userData?.photo_url && (
+              <div className="absolute -bottom-1 -right-1 bg-green-500 rounded-full p-1 border-2 border-slate-800">
+                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            )}
           </div>
           <div className="flex-1 min-w-0">
             <h3 className="text-lg sm:text-xl font-bold text-white truncate">{currentUser.name}</h3>
@@ -1141,11 +1128,14 @@ function UserProfile({ tasks, currentUser }) {
               {productivity.level}
             </div>
             <p className="text-slate-300 text-xs sm:text-sm mt-1">{productivity.description}</p>
+            {currentUser.maxUserId && (
+              <p className="text-blue-400 text-xs mt-2">MAX ID: {currentUser.maxUserId}</p>
+            )}
           </div>
         </div>
       </div>
 
-      {/* статистика */}
+      {/* Статистика */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
         <div className="bg-slate-700 rounded-xl p-3 sm:p-4 text-center border border-slate-500">
           <div className="text-lg sm:text-xl font-bold text-blue-400">{totalTasks}</div>
@@ -1165,7 +1155,7 @@ function UserProfile({ tasks, currentUser }) {
         </div>
       </div>
 
-      {/* температурная карта активности */}
+      {/* Тепловая карта активности */}
       <div className="bg-slate-700 rounded-2xl p-4 sm:p-6 border border-slate-500">
         <h3 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">📊 Активность за неделю</h3>
         <div className="grid grid-cols-7 gap-1 sm:gap-2">
@@ -1189,7 +1179,7 @@ function UserProfile({ tasks, currentUser }) {
         </div>
       </div>
 
-      {/* Достижения но их мало к сожалению извините */}
+      {/* Достижения */}
       <div className="bg-slate-700 rounded-2xl p-4 sm:p-6 border border-slate-500">
         <h3 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">🏆 Достижения</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
@@ -1236,319 +1226,276 @@ function UserProfile({ tasks, currentUser }) {
   );
 }
 
-function DailyAnalysis({ tasks, userId }) {
-  const [analysis, setAnalysis] = useState(null);
+// Ежедневный анализ с AI
+function DailyAnalysis({ tasks, currentUser }) {
+  const [aiData, setAiData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Функция для получения AI-аналитики
-  const fetchAIAnalysis = async () => {
+  useEffect(() => {
+    loadAiAnalytics();
+  }, [currentUser]);
+
+  const loadAiAnalytics = async () => {
+    if (!currentUser) return;
+    
+    setLoading(true);
+    setError(null);
     try {
-      setLoading(true);
-      setError(null);
-
-      const response = await fetch(`/api/user/ai-analytics?external_id=${userId}`);
-
-      if (!response.ok) {
-        throw new Error('Ошибка загрузки аналитики');
+      const response = await fetch(`${API}/user/ai-analytics?external_id=${currentUser.id}`);
+      if (response.ok) {
+        const data = await response.json();
+        console.log("AI Analytics data:", data);
+        setAiData(data);
+      } else {
+        throw new Error("Failed to load AI analytics");
       }
-
-      const data = await response.json();
-      setAnalysis(data.ai_analysis);
-
-    } catch (err) {
-      console.error('Error fetching AI analysis:', err);
-      setError(err.message);
-      // Fallback на локальную аналитику если AI недоступен
-      generateFallbackAnalysis();
+    } catch (error) {
+      console.error("Error loading AI analytics:", error);
+      setError("Не удалось загрузить аналитику");
+      setAiData(generateFallbackAnalytics(tasks));
     } finally {
       setLoading(false);
     }
   };
 
-  // Fallback анализ если AI недоступен
-  const generateFallbackAnalysis = () => {
+  // Fallback аналитика если API недоступно
+  const generateFallbackAnalytics = (tasks) => {
     const today = new Date().toDateString();
     const todayTasks = tasks.filter(task => {
       const taskDate = new Date(task.task_date).toDateString();
       return taskDate === today;
     });
-
     const completedToday = todayTasks.filter(t => t.status === 'done').length;
     const pendingToday = todayTasks.filter(t => t.status !== 'done').length;
-    const completionRate = todayTasks.length ? (completedToday / todayTasks.length) : 0;
+    const totalMinutes = todayTasks.reduce((sum, task) => sum + task.estimated_minutes, 0);
+    const completedMinutes = todayTasks
+      .filter(t => t.status === 'done')
+      .reduce((sum, task) => sum + task.estimated_minutes, 0);
 
-    let mood = 'neutral';
-    let insights = [];
-    let recommendations = [];
-
-    if (completedToday === 0 && pendingToday === 0) {
-      mood = 'neutral';
-      insights = ['Сегодня еще нет активных задач'];
-      recommendations = ['Начните с маленькой задачи чтобы запустить продуктивность'];
-    } else if (completionRate >= 0.8) {
-      mood = 'excellent';
-      insights = ['Вы сегодня невероятно продуктивны! 🚀', 'Отличный темп выполнения задач'];
-      recommendations = ['Пора ставить новые амбициозные цели', 'Поделитесь своим секретом продуктивности!'];
-    } else if (completionRate >= 0.6) {
-      mood = 'good';
-      insights = ['Стабильный прогресс!', 'Хороший баланс между сложными и простыми задачами'];
-      recommendations = ['Продолжайте в том же духе', 'Попробуйте планировать задачи на завтра'];
-    } else if (completionRate >= 0.3) {
-      mood = 'moderate';
-      insights = ['Есть прогресс, но можно лучше', 'Некоторые задачи требуют больше внимания'];
-      recommendations = ['Сосредоточьтесь на завершении начатых задач', 'Используйте технику Pomodoro'];
-    } else {
-      mood = 'needs_improvement';
-      insights = ['Сегодня был сложный день', 'Не все запланированное удалось выполнить'];
-      recommendations = ['Начните завтра с самой простой задачи', 'Разбейте большие задачи на мелкие шаги'];
-    }
-
-    setAnalysis({
-      mood,
-      productivity_score: Math.round(completionRate * 100),
-      energy_efficiency: Math.round(completionRate * 100),
-      insights,
-      recommendations,
-      focus_areas: pendingToday > completedToday ? ['Завершение начатых задач'] : ['Поддержание темпа']
-    });
-  };
-
-  // Загружаем аналитику при монтировании
-  useEffect(() => {
-    fetchAIAnalysis();
-  }, [tasks, userId]);
-
-  // Функции для стилей в зависимости от настроения
-  const getMoodConfig = () => {
-    if (!analysis) return {};
-
-    const configs = {
-      excellent: {
-        color: 'from-green-500/20 to-emerald-600/20 border-green-400/40',
-        emoji: '🎉',
-        title: 'Идеальный день!'
-      },
-      good: {
-        color: 'from-blue-500/20 to-cyan-600/20 border-blue-400/40',
-        emoji: '🚀',
-        title: 'Отличная работа!'
-      },
-      moderate: {
-        color: 'from-yellow-500/20 to-amber-600/20 border-yellow-400/40',
-        emoji: '💪',
-        title: 'Хороший старт!'
-      },
-      needs_improvement: {
-        color: 'from-orange-500/20 to-red-600/20 border-orange-400/40',
-        emoji: '📈',
-        title: 'Есть над чем поработать'
-      },
-      neutral: {
-        color: 'from-purple-500/20 to-pink-600/20 border-purple-400/40',
-        emoji: '🎯',
-        title: 'Начните свой день!'
-      }
-    };
-
-    return configs[analysis.mood] || configs.neutral;
-  };
-
-  // Базовая статистика для отображения
-  const getBasicStats = () => {
-    const today = new Date().toDateString();
-    const todayTasks = tasks.filter(task => {
-      const taskDate = new Date(task.task_date).toDateString();
-      return taskDate === today;
-    });
+    const efficiency = todayTasks.length ? Math.round((completedToday / todayTasks.length) * 100) : 0;
+    const timeUtilization = totalMinutes ? Math.round((completedMinutes / totalMinutes) * 100) : 0;
 
     return {
-      total: todayTasks.length,
-      completed: todayTasks.filter(t => t.status === 'done').length,
-      pending: todayTasks.filter(t => t.status !== 'done').length,
-      totalMinutes: todayTasks.reduce((sum, task) => sum + task.estimated_minutes, 0)
+      completed_today: completedToday,
+      pending_today: pendingToday,
+      total_today: todayTasks.length,
+      total_minutes: totalMinutes,
+      completed_minutes: completedMinutes,
+      efficiency_rate: efficiency,
+      time_utilization: timeUtilization,
+      ai_analysis: {
+        productivity_score: efficiency,
+        insights: [
+          completedToday === 0 ? "Начните день с выполнения первой задачи!" : 
+          completedToday >= pendingToday ? "Отличный старт дня! Продолжайте в том же духе!" :
+          "Сосредоточьтесь на завершении начатых задач",
+          timeUtilization > 80 ? "Эффективное использование времени!" :
+          timeUtilization > 50 ? "Хороший темп работы" :
+          "Попробуйте лучше распределить время между задачами"
+        ],
+        recommendations: [
+          "Используйте технику Pomodoro для лучшей концентрации",
+          "Начните с самых сложных задач утром",
+          "Делайте регулярные перерывы для поддержания продуктивности"
+        ],
+        energy_level: efficiency >= 80 ? "high" : efficiency >= 50 ? "medium" : "low",
+        mood_analysis: efficiency >= 70 ? "positive" : efficiency >= 40 ? "neutral" : "needs_improvement"
+      }
     };
   };
-
-  const stats = getBasicStats();
-  const moodConfig = getMoodConfig();
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <div className="text-center">
-          <h2 className="text-xl font-bold text-white">Анализируем ваш день...</h2>
-          <p className="text-slate-300">Используем AI для глубокого анализа</p>
+      <div className="space-y-4 sm:space-y-6">
+        <div className="text-center mb-6 sm:mb-8">
+          <h2 className="text-lg sm:text-xl font-bold text-white">AI Анализ</h2>
+          <p className="text-slate-300 text-sm">Анализируем вашу продуктивность...</p>
         </div>
-
-        <div className="bg-slate-800 rounded-2xl p-8 border border-slate-600 text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-slate-300">GigaChat анализирует вашу продуктивность</p>
+        <div className="flex justify-center items-center py-8 sm:py-12">
+          <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+          <span className="ml-3 text-white text-sm sm:text-base">Загрузка AI анализа...</span>
         </div>
       </div>
     );
   }
 
-  if (error) {
+  if (error && !aiData) {
     return (
-      <div className="space-y-6">
-        <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-6 text-center">
-          <div className="text-2xl mb-2">⚠️</div>
-          <h3 className="text-red-300 font-bold mb-2">Ошибка загрузки аналитики</h3>
-          <p className="text-red-200 text-sm">{error}</p>
+      <div className="space-y-4 sm:space-y-6">
+        <div className="text-center mb-6 sm:mb-8">
+          <h2 className="text-lg sm:text-xl font-bold text-white">AI Анализ</h2>
+          <p className="text-slate-300 text-sm">Произошла ошибка при загрузке аналитики</p>
+        </div>
+        <div className="text-center py-8 sm:py-12 text-slate-400">
+          <div className="w-16 h-16 bg-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <p className="text-red-400 mb-4">{error}</p>
           <button
-            onClick={fetchAIAnalysis}
-            className="mt-4 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm"
+            onClick={loadAiAnalytics}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
           >
             Попробовать снова
           </button>
         </div>
-
-        {/* Показываем fallback аналитику */}
-        {analysis && (
-          <div className={`bg-gradient-to-r ${moodConfig.color} rounded-2xl p-6 border`}>
-            <div className="text-center mb-4">
-              <div className="text-3xl mb-2">{moodConfig.emoji}</div>
-              <h3 className="text-xl font-bold text-white">{moodConfig.title}</h3>
-            </div>
-
-            <div className="grid grid-cols-3 gap-4 mb-6">
-              <div className="bg-white/10 rounded-xl p-3 text-center backdrop-blur-sm">
-                <div className="text-lg font-bold text-white">{stats.total}</div>
-                <div className="text-white/80 text-xs">Всего</div>
-              </div>
-              <div className="bg-white/10 rounded-xl p-3 text-center backdrop-blur-sm">
-                <div className="text-lg font-bold text-white">{stats.completed}</div>
-                <div className="text-white/80 text-xs">Завершено</div>
-              </div>
-              <div className="bg-white/10 rounded-xl p-3 text-center backdrop-blur-sm">
-                <div className="text-lg font-bold text-white">{stats.pending}</div>
-                <div className="text-white/80 text-xs">В процессе</div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
 
+  const analysis = aiData?.ai_analysis || {};
+  const stats = aiData || {};
+
+  const getProductivityColor = (score) => {
+    if (score >= 80) return 'from-green-500 to-emerald-500';
+    if (score >= 60) return 'from-yellow-500 to-amber-500';
+    if (score >= 40) return 'from-orange-500 to-red-500';
+    return 'from-red-500 to-pink-500';
+  };
+
+  const getEnergyLevel = () => {
+    const level = analysis.energy_level || 'medium';
+    switch(level) {
+      case 'high': return { label: '🔋 Высокая', color: 'text-green-400' };
+      case 'medium': return { label: '⚡ Средняя', color: 'text-yellow-400' };
+      case 'low': return { label: '🪫 Низкая', color: 'text-red-400' };
+      default: return { label: '⚡ Средняя', color: 'text-yellow-400' };
+    }
+  };
+
+  const getMoodEmoji = () => {
+    const mood = analysis.mood_analysis || 'neutral';
+    switch(mood) {
+      case 'positive': return '😊';
+      case 'neutral': return '😐';
+      case 'needs_improvement': return '😔';
+      default: return '😐';
+    }
+  };
+
+  const energyInfo = getEnergyLevel();
+
   return (
-    <div className="space-y-6">
-      {/* Заголовок */}
-      <div className="text-center">
-        <h2 className="text-xl font-bold text-white">AI Анализ дня</h2>
-        <p className="text-slate-300 text-sm">Умная аналитика от GigaChat</p>
+    <div className="space-y-4 sm:space-y-6">
+      <div className="text-center mb-6 sm:mb-8">
+        <h2 className="text-lg sm:text-xl font-bold text-white">AI Анализ продуктивности</h2>
+        <p className="text-slate-300 text-sm">Умная аналитика вашего дня</p>
       </div>
 
-      {/* Основная карточка с аналитикой */}
-      <div className={`bg-gradient-to-r ${moodConfig.color} rounded-2xl p-6 border`}>
-        <div className="text-center mb-6">
-          <div className="text-4xl mb-3">{moodConfig.emoji}</div>
-          <h3 className="text-2xl font-bold text-white mb-2">{moodConfig.title}</h3>
-          <p className="text-white/80">Оценка продуктивности: {analysis.productivity_score}%</p>
+      {/* Основная статистика */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
+        <div className="bg-slate-700 rounded-xl p-3 sm:p-4 text-center border border-slate-500">
+          <div className="text-lg sm:text-xl font-bold text-blue-400">{stats.completed_today || 0}</div>
+          <div className="text-slate-300 text-xs sm:text-sm">Завершено</div>
         </div>
-
-        {/* Статистика */}
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <div className="bg-white/10 rounded-xl p-4 text-center backdrop-blur-sm">
-            <div className="text-xl font-bold text-white">{stats.total}</div>
-            <div className="text-white/80 text-sm">Всего задач</div>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4 text-center backdrop-blur-sm">
-            <div className="text-xl font-bold text-white">{stats.completed}</div>
-            <div className="text-white/80 text-sm">Завершено</div>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4 text-center backdrop-blur-sm">
-            <div className="text-xl font-bold text-white">{stats.pending}</div>
-            <div className="text-white/80 text-sm">В процессе</div>
-          </div>
+        <div className="bg-slate-700 rounded-xl p-3 sm:p-4 text-center border border-slate-500">
+          <div className="text-lg sm:text-xl font-bold text-yellow-400">{stats.pending_today || 0}</div>
+          <div className="text-slate-300 text-xs sm:text-sm">В процессе</div>
         </div>
-
-        {/* Прогресс бар */}
-        <div className="mb-6">
-          <div className="flex justify-between text-sm text-white/80 mb-2">
-            <span>Прогресс выполнения</span>
-            <span>{analysis.productivity_score}%</span>
+        <div className="bg-slate-700 rounded-xl p-3 sm:p-4 text-center border border-slate-500">
+          <div className="text-lg sm:text-xl font-bold text-purple-400">{stats.efficiency_rate || 0}%</div>
+          <div className="text-slate-300 text-xs sm:text-sm">Эффективность</div>
+        </div>
+        <div className="bg-slate-700 rounded-xl p-3 sm:p-4 text-center border border-slate-500">
+          <div className="text-lg sm:text-xl font-bold text-green-400">
+            {Math.round((stats.completed_minutes || 0) / 60)}ч
           </div>
-          <div className="w-full bg-white/20 rounded-full h-2">
-            <div
-              className="bg-green-500 h-2 rounded-full transition-all duration-500"
-              style={{ width: `${analysis.productivity_score}%` }}
-            ></div>
+          <div className="text-slate-300 text-xs sm:text-sm">Работа</div>
+        </div>
+      </div>
+
+      {/* Оценка продуктивности */}
+      <div className={`bg-gradient-to-r ${getProductivityColor(analysis.productivity_score || 0)} rounded-2xl p-4 sm:p-6 border`}>
+        <div className="text-center">
+          <div className="text-2xl sm:text-3xl mb-2">{getMoodEmoji()}</div>
+          <div className="text-xl sm:text-2xl font-bold text-white mb-2">
+            Оценка продуктивности: {analysis.productivity_score || 0}%
+          </div>
+          <div className="text-white/80 text-sm sm:text-base">
+            Уровень энергии: <span className={energyInfo.color}>{energyInfo.label}</span>
           </div>
         </div>
       </div>
 
-      {/* Инсайты и рекомендации */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Ключевые инсайты */}
-        <div className="bg-slate-800 rounded-xl p-6 border border-slate-600">
-          <h3 className="text-lg font-bold text-white mb-4 flex items-center">
-            <span className="text-blue-400 mr-2">💡</span>
-            Ключевые инсайты
+      {/* AI Инсайты и рекомендации */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        {/* Инсайты */}
+        <div className="bg-slate-700 rounded-xl p-4 sm:p-6 border border-slate-500">
+          <h3 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">
+            🧠 AI Инсайты
           </h3>
-          <div className="space-y-3">
-            {analysis.insights.map((insight, index) => (
-              <div key={index} className="flex items-start space-x-3">
+          <div className="space-y-2 sm:space-y-3">
+            {(analysis.insights || []).map((insight, index) => (
+              <div key={index} className="flex items-start space-x-2 sm:space-x-3">
                 <div className="w-2 h-2 bg-blue-400 rounded-full mt-2 flex-shrink-0"></div>
-                <p className="text-slate-300 text-sm leading-relaxed">{insight}</p>
+                <p className="text-slate-300 text-xs sm:text-sm">{insight}</p>
               </div>
             ))}
+            {(!analysis.insights || analysis.insights.length === 0) && (
+              <p className="text-slate-400 text-sm">Анализ данных в процессе...</p>
+            )}
           </div>
         </div>
 
         {/* Рекомендации */}
-        <div className="bg-slate-800 rounded-xl p-6 border border-slate-600">
-          <h3 className="text-lg font-bold text-white mb-4 flex items-center">
-            <span className="text-green-400 mr-2">🎯</span>
-            Рекомендации
+        <div className="bg-slate-700 rounded-xl p-4 sm:p-6 border border-slate-500">
+          <h3 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">
+            💡 Рекомендации
           </h3>
-          <div className="space-y-3">
-            {analysis.recommendations.map((recommendation, index) => (
-              <div key={index} className="flex items-start space-x-3">
+          <div className="space-y-2 sm:space-y-3">
+            {(analysis.recommendations || []).map((recommendation, index) => (
+              <div key={index} className="flex items-start space-x-2 sm:space-x-3">
                 <div className="w-2 h-2 bg-green-400 rounded-full mt-2 flex-shrink-0"></div>
-                <p className="text-slate-300 text-sm leading-relaxed">{recommendation}</p>
+                <p className="text-slate-300 text-xs sm:text-sm">{recommendation}</p>
               </div>
             ))}
+            {(!analysis.recommendations || analysis.recommendations.length === 0) && (
+              <p className="text-slate-400 text-sm">Загрузка рекомендаций...</p>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Области для улучшения */}
-      {analysis.focus_areas && analysis.focus_areas.length > 0 && (
-        <div className="bg-orange-500/10 rounded-xl p-6 border border-orange-500/30">
-          <h3 className="text-lg font-bold text-white mb-4 flex items-center">
-            <span className="text-orange-400 mr-2">📊</span>
-            Области для улучшения
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {analysis.focus_areas.map((area, index) => (
-              <span
-                key={index}
-                className="bg-orange-500/20 text-orange-300 px-3 py-1 rounded-full text-sm border border-orange-500/30"
-              >
-                {area}
-              </span>
-            ))}
+      {/* Детальная статистика */}
+      <div className="bg-slate-700 rounded-xl p-4 sm:p-6 border border-slate-500">
+        <h3 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">📊 Детальная статистика</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <div className="text-center p-3 bg-slate-600 rounded-lg">
+            <div className="text-blue-400 font-bold text-lg">{stats.total_today || 0}</div>
+            <div className="text-slate-300 text-sm">Всего задач</div>
+          </div>
+          <div className="text-center p-3 bg-slate-600 rounded-lg">
+            <div className="text-green-400 font-bold text-lg">{stats.completed_today || 0}</div>
+            <div className="text-slate-300 text-sm">Выполнено</div>
+          </div>
+          <div className="text-center p-3 bg-slate-600 rounded-lg">
+            <div className="text-yellow-400 font-bold text-lg">
+              {Math.round((stats.total_minutes || 0) / 60)}ч
+            </div>
+            <div className="text-slate-300 text-sm">Планируемое время</div>
+          </div>
+          <div className="text-center p-3 bg-slate-600 rounded-lg">
+            <div className="text-purple-400 font-bold text-lg">{stats.time_utilization || 0}%</div>
+            <div className="text-slate-300 text-sm">Использование времени</div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Кнопка обновления */}
       <div className="text-center">
         <button
-          onClick={fetchAIAnalysis}
-          disabled={loading}
-          className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-500/50 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+          onClick={loadAiAnalytics}
+          className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-lg hover:from-blue-600 hover:to-purple-600 transition-colors text-sm"
         >
-          {loading ? 'Обновляем...' : '🔄 Обновить анализ'}
+          Обновить анализ
         </button>
       </div>
     </div>
   );
 }
 
-// кабан доска))
+// Канбан доска
 function KanbanBoard({ currentUser }) {
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
@@ -1830,7 +1777,7 @@ function KanbanBoard({ currentUser }) {
         </div>
       ) : selectedProject ? (
         <div className="space-y-4">
-          {/* информация о проекте */}
+          {/* Информация о проекте */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
             <div className="flex-1 min-w-0">
               <h3 className="text-lg font-bold text-white truncate">{selectedProject.title}</h3>
@@ -1859,7 +1806,7 @@ function KanbanBoard({ currentUser }) {
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, column)}
               >
-                {/* заголовок колонки */}
+                {/* Заголовок колонки */}
                 <div 
                   className="p-4 rounded-t-xl border-b border-slate-500"
                   style={{ backgroundColor: column.color + '20' }}
@@ -1874,7 +1821,7 @@ function KanbanBoard({ currentUser }) {
                   </div>
                 </div>
 
-                {/* карточки в колонке */}
+                {/* Карточки в колонке */}
                 <div className="p-3 space-y-3 min-h-48 max-h-96 overflow-y-auto">
                   {column.cards && column.cards.map(card => (
                     <div
@@ -1925,7 +1872,7 @@ function KanbanBoard({ currentUser }) {
                     </div>
                   ))}
                   
-                  {/* кнопка добавления карточки */}
+                  {/* Кнопка добавления карточки */}
                   <button
                     onClick={() => {
                       setSelectedColumn(column);
@@ -1942,7 +1889,7 @@ function KanbanBoard({ currentUser }) {
         </div>
       ) : null}
 
-      {/* модальное окно создания проекта */}
+      {/* Модальное окно создания проекта */}
       {showCreateProject && (
         <CreateProjectModal
           onCreate={createProject}
@@ -1950,7 +1897,7 @@ function KanbanBoard({ currentUser }) {
         />
       )}
 
-      {/* модальное окно создания карточки */}
+      {/* Модальное окно создания карточки */}
       {showCreateCard && selectedColumn && (
         <CreateCardModal
           column={selectedColumn}
@@ -1965,7 +1912,7 @@ function KanbanBoard({ currentUser }) {
   );
 }
 
-// модальное окно для создания проекта
+// Модальное окно для создания проекта
 function CreateProjectModal({ onCreate, onClose }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -2062,7 +2009,7 @@ function CreateProjectModal({ onCreate, onClose }) {
   );
 }
 
-// модальное окно для создания карточки
+// Модальное окно для создания карточки
 function CreateCardModal({ column, onCreate, onClose }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -2184,7 +2131,7 @@ function CreateCardModal({ column, onCreate, onClose }) {
   );
 }
 
-// модальное окно добавления задач
+// Модальное окно добавления задач
 function AddTaskModal({ onAdd, onClose, selectedDate, title = "Новая задача" }) {
   const [taskTitle, setTaskTitle] = useState("");
   const [minutes, setMinutes] = useState(25);
@@ -2371,7 +2318,7 @@ function AddTaskModal({ onAdd, onClose, selectedDate, title = "Новая зад
   );
 }
 
-//непосредственно главный компонент
+// Главный компонент приложения
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [tasks, setTasks] = useState([]);
@@ -2379,12 +2326,25 @@ export default function App() {
   const [selectedDateForTask, setSelectedDateForTask] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('tasks');
+  const [authState, setAuthState] = useState('checking'); 
+
+  useEffect(() => {
+    checkMaxEnvironment();
+  }, []);
 
   useEffect(() => {
     if (currentUser && tasks.length === 0) {
       loadTasks();
     }
   }, [currentUser]);
+
+  const checkMaxEnvironment = () => {
+    if (window.WebApp && window.WebApp.initDataUnsafe) {
+      setAuthState('auto-login');
+    } else {
+      setAuthState('error');
+    }
+  };
 
   const loadTasks = async () => {
     if (!currentUser) return;
@@ -2405,25 +2365,25 @@ export default function App() {
     }
   };
 
-  const handleLogin = (userId, userName, maxUserId) => {
-    setCurrentUser({ 
-      id: userId, 
-      name: userName || 'Пользователь', 
-      maxUserId 
-    });
+  const handleLogin = (userData) => {
+    setCurrentUser(userData);
     localStorage.setItem("taskbot_user", JSON.stringify({ 
-      id: userId, 
-      maxUserId 
+      id: userData.id,
+      maxUserId: userData.maxUserId
     }));
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    setTasks([]);
-    localStorage.removeItem("taskbot_user");
+  const handleAuthError = (error) => {
+    setAuthState('error');
+    console.error("Authentication error:", error);
   };
 
-  // добавление задач
+  const handleRetryAuth = () => {
+    setAuthState('checking');
+    setTimeout(() => checkMaxEnvironment(), 1000);
+  };
+
+  // Добавление задач
   const handleAddTask = async (title, minutes, difficulty, taskDate = null, isParentTask = false) => {
     if (!currentUser) {
       console.error("No current user");
@@ -2437,7 +2397,6 @@ export default function App() {
         difficulty: parseInt(difficulty) || 2
       };
 
-      // если дата указана - добавляем в запрос
       if (taskDate) {
         taskData.task_date = taskDate;
       }
@@ -2446,7 +2405,6 @@ export default function App() {
 
       let response;
       
-      //если род.задача используем специальный эндпоинт
       if (isParentTask) {
         response = await fetch(`${API}/tasks/decompose?external_id=${currentUser.id}`, {
           method: "POST",
@@ -2456,7 +2414,6 @@ export default function App() {
           body: JSON.stringify(taskData),
         });
       } else {
-        //дефолт задачка
         response = await fetch(`${API}/tasks/create?external_id=${currentUser.id}`, {
           method: "POST",
           headers: {
@@ -2469,7 +2426,7 @@ export default function App() {
       if (response.ok) {
         const result = await response.json();
         console.log("Task created successfully:", result);
-        await loadTasks(); // перезагружаем задачи
+        await loadTasks(); 
       } else {
         const errorText = await response.text();
         console.error("Server error:", response.status, errorText);
@@ -2496,7 +2453,7 @@ export default function App() {
       });
 
       if (response.ok) {
-        await loadTasks(); // перезагрузка задач после завершения 
+        await loadTasks(); 
       } else {
         console.error("Failed to complete task:", response.status);
       }
@@ -2511,23 +2468,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("taskbot_user");
-    if (savedUser) {
-      try {
-        const userData = JSON.parse(savedUser);
-        setCurrentUser({ 
-          ...userData, 
-          name: userData.name || 'Пользователь' 
-        });
-      } catch (error) {
-        console.error("Error parsing saved user:", error);
-        localStorage.removeItem("taskbot_user");
-      }
-    }
-  }, []);
-
-  // обработчик ошибок всего приложения
-  useEffect(() => {
     const handleError = (error) => {
       console.error("Global error:", error);
     };
@@ -2541,38 +2481,56 @@ export default function App() {
     };
   }, []);
 
+  if (authState === 'checking') {
+    return <LoadingScreen />;
+  }
+
+  if (authState === 'error') {
+    return (
+      <ErrorScreen 
+        error="MAX Bridge не доступен. Откройте приложение через MAX мессенджер." 
+        onRetry={handleRetryAuth}
+      />
+    );
+  }
+
+  if (authState === 'auto-login' && !currentUser) {
+    return <AutoLogin onLogin={handleLogin} onError={handleAuthError} />;
+  }
+
   if (!currentUser) {
-    return <LoginForm onLogin={handleLogin} />;
+    return <LoadingScreen />;
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-800 p-3 sm:p-4">
       <div className="max-w-6xl mx-auto">
-        {/* Шапка */}
+        {/* Шапка с аватаркой из MAX */}
         <header className="bg-slate-800 rounded-2xl p-4 sm:p-6 shadow border border-slate-600 mb-4 sm:mb-6">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
             <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
               <div className="relative flex-shrink-0">
-                <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-r from-blue-500 to-purple-500 rounded-2xl flex items-center justify-center shadow">
-                  <span className="text-white font-bold text-base sm:text-lg">
-                    {currentUser.name?.charAt(0)?.toUpperCase() || 'U'}
-                  </span>
-                </div>
+                <img 
+                  src={currentUser.userData?.photo_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.name)}&background=3b82f6&color=fff&size=128&bold=true`}
+                  alt={currentUser.name}
+                  className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl border-2 border-blue-500 shadow"
+                />
+                {currentUser.userData?.photo_url && (
+                  <div className="absolute -bottom-1 -right-1 bg-green-500 rounded-full p-1 border-2 border-slate-800">
+                    <svg className="w-2 h-2 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                )}
               </div>
               <div className="min-w-0 flex-1">
                 <h1 className="text-lg sm:text-xl font-bold text-white truncate">Добро пожаловать, {currentUser.name}!</h1>
                 <p className="text-slate-300 text-xs sm:text-sm truncate">LevelUp - ваша система продуктивности</p>
                 {currentUser.maxUserId && (
-                  <p className="text-blue-400 text-xs mt-1">Синхронизировано с ботом MAX</p>
+                  <p className="text-blue-400 text-xs mt-1">Синхронизировано с MAX • ID: {currentUser.maxUserId}</p>
                 )}
               </div>
             </div>
-            <button
-              onClick={handleLogout}
-              className="w-full sm:w-auto px-4 py-2 bg-slate-700 border border-slate-500 text-white rounded-xl hover:bg-slate-600 transition-all duration-300 transform hover:scale-105 text-sm sm:text-base mt-2 sm:mt-0 min-h-[44px]"
-            >
-              Выйти
-            </button>
           </div>
         </header>
 
@@ -2616,7 +2574,7 @@ export default function App() {
                 />
               )}
               {activeTab === 'analysis' && (
-                <DailyAnalysis tasks={tasks} />
+                <DailyAnalysis tasks={tasks} currentUser={currentUser} />
               )}
               {activeTab === 'kanban' && (
                 <KanbanBoard currentUser={currentUser} />
@@ -2639,5 +2597,4 @@ export default function App() {
       </div>
     </div>
   );
-
 }

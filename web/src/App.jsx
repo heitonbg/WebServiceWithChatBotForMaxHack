@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 
-const API = process.env.REACT_APP_BOT_URL
+const API = import.meta.env.VITE_BOT_URL
 
 
 // вход по айди - РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ MAX API

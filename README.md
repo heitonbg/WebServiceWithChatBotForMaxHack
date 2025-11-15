@@ -116,6 +116,7 @@ npm run dev
 
 ```bash
 git clone https://github.com/heitonbg/WebServiceWithChatBotForMaxHack.git
+cd WebServiceWithChatBotForMaxHack/
 sudo docker build -t my-hackathon-bot .
 sudo docker run -p 3000:5173 -p 8000:8000 --env-file .env --name running-bot my-hackathon-bot
 ```

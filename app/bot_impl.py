@@ -168,14 +168,14 @@ class TaskBot:
 
         kb = buttons.KeyboardBuilder()
 
-        for task in page_tasks:
+        for display_idx, task in enumerate(page_tasks, start=start_idx + 1):
             if task.is_parent:
                 completed, total, _ = get_task_progress(task.id)
-                label = f"🎯 {task.title[:15]}... ({completed}/{total})"
+                label = f"{display_idx}. 🎯 {task.title[:15]}... ({completed}/{total})"
                 callback_data = f'view_parent_{task.id}'
             else:
                 short_title = task.title[:18] + "..." if len(task.title) > 18 else task.title
-                label = f"✅ {short_title}"
+                label = f"{display_idx}. ✅ {short_title}"
                 callback_data = f'{action_type}_{task.id}'
 
             kb.add(buttons.CallbackButton(label, callback_data))
@@ -267,28 +267,33 @@ class TaskBot:
         regular_tasks = [t for t in tasks if not t.parent_id and not t.is_parent]
 
         lines = []
+        
+        # Объединяем все задачи для сквозной нумерации
+        all_tasks = regular_tasks + parent_tasks
 
-        for task in regular_tasks:
-            status_icon = "✅" if task.status == "done" else "⏳"
-            time_info = f" ⏱{task.estimated_minutes}m" if task.estimated_minutes else ""
-            diff_info = f" ⚡{task.difficulty}" if task.difficulty > 1 else ""
-            lines.append(f"{status_icon} `{task.id:02d}` {task.title}{time_info}{diff_info}")
-
-        for parent in parent_tasks:
-            completed, total, progress = get_task_progress(parent.id)
-
-            if progress == 100:
-                status_icon = "✅"
-            elif progress > 0:
-                status_icon = "🟡"
+        for idx, task in enumerate(all_tasks, 1):
+            if task.is_parent:
+                completed, total, progress = get_task_progress(task.id)
+                if progress == 100:
+                    status_icon = "✅"
+                elif progress > 0:
+                    status_icon = "🟡"
+                else:
+                    status_icon = "🎯"
+                progress_text = f" ({completed}/{total})" if total > 0 else ""
+                time_info = ""
+                diff_info = ""
             else:
-                status_icon = "🎯"
-
-            progress_text = f" ({completed}/{total})" if total > 0 else ""
-            lines.append(f"{status_icon} `{parent.id:02d}` {parent.title}{progress_text}")
+                status_icon = "✅" if task.status == "done" else "⏳"
+                time_info = f" ⏱{task.estimated_minutes}m" if task.estimated_minutes else ""
+                diff_info = f" ⚡{task.difficulty}" if task.difficulty > 1 else ""
+                progress_text = ""
+            
+            # Вместо task.id показываем порядковый номер idx
+            lines.append(f"{status_icon} `{idx:02d}` {task.title}{time_info}{diff_info}{progress_text}")
 
         return "📋 **Твои задачи:**\n\n" + "\n".join(lines)
-
+    
     def format_subtask_list(self, subtasks, parent_title):
         if not subtasks:
             return f"🎯 **{parent_title}**\n\n📝 Подзадачи не найдены"
@@ -904,13 +909,29 @@ class TaskBot:
                 if not arg or not arg.isdigit():
                     tasks = list_tasks(user_id)
                     kb, message = self.get_paginated_task_selector(user_id, tasks, 'complete')
-
                     full_message = f"✅ **Завершение задач**\n\n{message}"
-
                     await ctx.reply(full_message, keyboard=kb)
                     return
 
-                task_id = int(arg)
+                # Получаем все задачи для преобразования номера в реальный ID
+                tasks = list_tasks(user_id)
+                pending_tasks = [t for t in tasks if t.status != 'done']
+                regular_tasks = [t for t in pending_tasks if not t.parent_id and not t.is_parent]
+                parent_tasks = [t for t in pending_tasks if t.is_parent]
+                all_display_tasks = regular_tasks + parent_tasks
+
+                task_index = int(arg) - 1
+
+                if task_index < 0 or task_index >= len(all_display_tasks):
+                    await ctx.reply(
+                        f"❌ **Неверный номер задачи**\n\n"
+                        f"Введи номер от 1 до {len(all_display_tasks)}",
+                        keyboard=self.get_main_keyboard()
+                    )
+                    return
+
+                selected_task = all_display_tasks[task_index]
+                task_id = selected_task.id
 
                 task = get_task_by_id(task_id)
 
